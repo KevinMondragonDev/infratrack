@@ -11,6 +11,8 @@ Verifica la numeración contra la versión del estándar que uses.
 import json
 import re
 
+from extensions import TRI_NO, TRI_UNKNOWN, TRI_YES, tri_state
+
 PROD = {"prod"}
 NON_PROD = {"staging", "qa", "dev", "sandbox"}
 RESOURCE_POLICY_TARGETS = {"s3", "sqs", "sns", "kms", "lambda", "secrets", "ecr", "dynamodb", "kinesis", "eventbridge",
@@ -36,7 +38,7 @@ CONTROLS = [
     ("IAM-ROOT-MFA", "identity", "Root con MFA", ["CIS", "FSBP IAM.9"], "account", ["ACC-ROOT-MFA"]),
     ("IAM-ROOT-KEYS", "identity", "Root sin access keys", ["CIS", "FSBP IAM.4"], "account", ["ACC-ROOT-KEYS"]),
     ("IAM-SSO", "identity", "Acceso humano federado (Identity Center), sin llaves de larga duración", ["CIS"], "account",
-     ["ACC-SSO", "ACC-IAM-KEYS", "ACC-PASSWORD"]),
+     ["ACC-SSO", "ACC-IAM-KEYS", "ACC-PASSWORD", "IDP-MFA"]),
     ("IAM-ANALYZER", "identity", "IAM Access Analyzer activo", ["CIS"], "account", ["ACC-ACCESS-ANALYZER"]),
     ("IAM-ADMIN", "identity", "Sin políticas de administrador completo (*:*)", ["CIS", "FSBP IAM.1"],
      ("iam_role",), ["POL-ADMIN"]),
@@ -46,6 +48,8 @@ CONTROLS = [
      ("s3", "kms", "vpce"), ["POL-PUBLIC-PRINCIPAL", "POL-EXTERNAL-ACCOUNT"]),
     ("IAM-WORKLOAD", "identity", "Cada carga con su propio rol y trust policy correcta", [],
      ("lambda", "ecs", "eks", "emr", "glue", "batch", "iam_role"), ["EKS-NODE-ROLE", "IAM-TRUST-MISMATCH"]),
+    ("IAM-EXTERNAL", "identity", "Terceros y pipelines entran con roles (ExternalId / OIDC), sin llaves", [],
+     ("secops", "observability", "cicd", "ext_dataplatform"), ["EXT-NO-EXTERNALID", "EXT-CICD-KEYS"]),
     ("IAM-XACCT", "identity", "Accesos entre cuentas acotados y sin mezclar ambientes", [], "always",
      ["XACCT-ENV-MIX"]),
 
@@ -78,7 +82,7 @@ CONTROLS = [
      ["SEC-SHIELD", "SHIELD-NONE", "SHIELD-L7"]),
     ("INF-IMDS", "infrastructure", "IMDSv2 obligatorio", ["CIS", "FSBP EC2.8"], ("ec2", "asg", "beanstalk"), ["EC2-IMDS"]),
     ("INF-SSM", "infrastructure", "Administración sin SSH (Session Manager)", [], ("ec2", "asg"), ["EC2-SSH"]),
-    ("INF-EGRESS", "infrastructure", "Salida a internet filtrada", [], "always", ["SEC-EGRESS-FILTER"]),
+    ("INF-EGRESS", "infrastructure", "Salida a internet filtrada", [], "always", ["SEC-EGRESS-FILTER", "PROXY-CA"]),
     ("INF-EKS-ENDPOINT", "infrastructure", "API de EKS no pública", ["FSBP EKS.1"], ("eks",), ["EKS-ENDPOINT"]),
     ("INF-PATCHING", "infrastructure", "Parches administrados", [], ("beanstalk",), ["EB-UPDATES"]),
 
@@ -92,7 +96,7 @@ CONTROLS = [
      ["ALB-HTTPS", "CF-HTTP", "CF-TLS", "ALB-TLS-POLICY", "MSK-TLS", "EC-TLS", "DOC-TLS"]),
     ("DAT-KMS", "data", "Rotación de llaves KMS", ["CIS", "FSBP KMS.4"], ("kms",), ["KMS-ROT"]),
     ("DAT-SECRETS", "data", "Secretos administrados y rotados (nunca en variables)", ["FSBP SecretsManager.1"],
-     ("secrets", "rds", "aurora", "lambda"), ["SM-ROT", "DB-SECRET", "LAMBDA-SECRET-ENV"]),
+     ("secrets", "rds", "aurora", "lambda", "ext_storage"), ["SM-ROT", "DB-SECRET", "LAMBDA-SECRET-ENV", "EXT-STORAGE-SECRET"]),
     ("DAT-BACKUP", "data", "Backups y recuperación", ["FSBP DynamoDB.2"],
      ("rds", "aurora", "dynamodb", "s3", "backup"), ["DB-BACKUP", "DDB-PITR", "S3-VERSIONING", "BKP-NONE"]),
     ("DAT-DISCOVERY", "data", "Descubrimiento de datos sensibles (Macie)", [], "account", ["ACC-MACIE"]),
@@ -123,6 +127,8 @@ CONTROLS = [
     ("GOV-LZ", "governance", "Cuentas dedicadas de seguridad y log archive", [], "multiaccount", ["ORG-LZ"]),
     ("GOV-DELEGATED", "governance", "Servicios de seguridad con administrador delegado", [], ("organization",),
      ["ORG-DELEGATED"]),
+    ("GOV-TAGS", "governance", "Tags de gobierno completos (default_tags)", [], "tags", ["TAG-MISSING"]),
+    ("APP-PIPELINE", "governance", "Pipeline IaC con aprobación de planes", [], ("cicd",), ["EXT-CICD-APPROVAL"]),
     ("GOV-COST", "governance", "Alertas de presupuesto y anomalías", [], "account", ["ACC-BUDGET"]),
 
     ("IR-ALERTS", "ir", "Hallazgos enrutados a alertas", [], "account", ["ACC-ALERTS"]),
@@ -192,7 +198,14 @@ def _as_list(v):
     return v if isinstance(v, list) else [v]
 
 
+RULE_FIELD = {rule: field for field, rule, *_ in ACCOUNT_BASELINE}
+
+
 class SecurityChecks:
+    def field_label(self, comp_id, key):
+        from catalog import COMPONENTS_BY_ID
+        return next((f["label"] for f in COMPONENTS_BY_ID[comp_id]["fields"] if f["key"] == key), key)
+
     # ───────────── helpers de cuentas ─────────────
     def account_of(self, n):
         return n if n["type"] == "account" else self.ancestor(n, "account")
@@ -223,24 +236,33 @@ class SecurityChecks:
             c, L = self.cfg(a), self.label(a)
             env = c.get("environment") or ""
             exempt = EXEMPT_BASELINE.get(env, set())
+            unconfirmed = []
             for field, rule, sev, title, rec in ACCOUNT_BASELINE:
-                if rule in exempt or c.get(field):
+                st = tri_state(c.get(field))
+                if rule in exempt or st == TRI_YES:
+                    continue
+                if st == TRI_UNKNOWN:
+                    unconfirmed.append(self.field_label("account", field))
                     continue
                 if env not in PROD and sev == "critical":
                     sev = "high"
                 self.add(sev, "Seguridad", rule, f"Cuenta '{L}': {title}", f"Línea base de seguridad de la cuenta ({env or 'sin ambiente'}).",
                          rec, [a])
+            if unconfirmed:
+                self.add("info", "Seguimiento", "ACC-UNCONFIRMED", f"Cuenta '{L}': {len(unconfirmed)} controles sin confirmar",
+                         "Sin confirmar: " + "; ".join(unconfirmed) + ". No cuentan como falla hasta que se respondan.",
+                         "Confirma cada dato con el equipo de plataforma y márcalo como Sí o No.", [a])
             keys = c.get("iam_users_keys") or 0
             if keys:
                 self.add("high" if env in PROD else "medium", "Seguridad", "ACC-IAM-KEYS",
                          f"Cuenta '{L}': {keys} usuarios IAM con access keys",
                          "Las llaves de larga duración son la causa más común de compromisos.",
                          "Migra a IAM Identity Center y roles; si son para máquinas, usa roles (OIDC/IRSA/instance profile).", [a])
-                if not c.get("identity_center") and not c.get("password_policy"):
+                if tri_state(c.get("identity_center")) != TRI_YES and tri_state(c.get("password_policy")) == TRI_NO:
                     self.add("medium", "Seguridad", "ACC-PASSWORD", f"Cuenta '{L}': sin política de contraseñas",
                              "Hay usuarios IAM y no se confirmó política de contraseñas.",
                              "Exige longitud ≥14, sin reutilización, y MFA para usuarios de consola.", [a])
-            if c.get("securityhub") and not c.get("sh_standards"):
+            if tri_state(c.get("securityhub")) == TRI_YES and not c.get("sh_standards"):
                 self.add("low", "Seguridad", "ACC-SECURITYHUB", f"Cuenta '{L}': Security Hub sin estándares",
                          "Security Hub está habilitado pero no se indicaron estándares.",
                          "Activa al menos AWS Foundational Security Best Practices y CIS.", [a])
@@ -605,10 +627,19 @@ class SecurityChecks:
         for cid, dom, title, refs, applies, rules in CONTROLS:
             fs = [f for r in rules for f in by_rule.get(r, [])]
             active = [f for f in fs if not f.get("dismissed")]
+            hint = ""
             if applies == "account":
                 status = None if has_accounts else ("fail" if active else "unknown")
+                if has_accounts and not active:
+                    fields = [RULE_FIELD[r] for r in rules if r in RULE_FIELD]
+                    pending = [self.label(a) for a in self.of_type("account")
+                               if any(tri_state(self.cfg(a).get(f)) == TRI_UNKNOWN for f in fields)]
+                    if pending:
+                        status, hint = "unknown", "Sin confirmar en: " + ", ".join(pending)
             elif applies == "multiaccount":
                 status = "na" if not multi else None
+            elif applies == "tags":
+                status = None if self.required_tags() else "na"
             elif applies == "always":
                 status = None
             else:
@@ -619,7 +650,7 @@ class SecurityChecks:
                     "finding_ids": [f["id"] for f in fs],
                     "worst": min((f["severity"] for f in active), key=["critical", "high", "medium", "low", "info"].index,
                                  default=None),
-                    "hint": "Agrega un componente 'Cuenta AWS' y marca su línea base." if status == "unknown" else ""}
+                    "hint": hint or ("Agrega un componente 'Cuenta AWS' y marca su línea base." if status == "unknown" else "")}
             d = domains[dom]
             d["controls"].append(ctrl)
             if status in ("pass", "fail", "accepted", "unknown"):

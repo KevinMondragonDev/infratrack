@@ -16,6 +16,8 @@
     <button id="btnMenu" class="btn">Proyecto ▾</button>
     <div id="menu" class="menu hidden">
       <button data-act="duplicate">Duplicar proyecto</button>
+      <button data-act="dup-env">Duplicar como otro ambiente (PRE / PRO)…</button>
+      <button data-act="compare">Comparar con otro proyecto / ambiente…</button>
       <button data-act="backups">Respaldos automáticos…</button>
       <hr>
       <button data-act="export-md">Exportar reporte Markdown (para el arquitecto)</button>
@@ -65,6 +67,7 @@
       <label class="tgl"><input type="checkbox" id="tglPending"> Pendientes</label>
       <label class="tgl"><input type="checkbox" id="tglFindings" checked> Hallazgos</label>
       <select id="envFilter" class="env-filter hidden" title="Resaltar un ambiente"></select>
+      <select id="flowFilter" class="env-filter hidden" title="Resaltar un flujo"></select>
     </div>
     <svg id="canvas" tabindex="0">
       <defs>

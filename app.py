@@ -25,6 +25,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 import ai  # noqa: E402
+import compare as comparer  # noqa: E402
 import icons  # noqa: E402
 from catalog import catalog  # noqa: E402
 from copilot import analyze  # noqa: E402
@@ -165,8 +166,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_duplicate(self, pid):
         p = STORE.get(pid)
+        b = self.body()
+        env = (b.get("environment") or "").strip()
+        if env:
+            amap = {str(k): str(v) for k, v in (b.get("account_map") or {}).items() if str(v).strip()}
+            for v in amap.values():
+                if not re.fullmatch(r"\d{12}", v):
+                    raise ValueError(f"ID de cuenta inválido: {v}")
+            new = comparer.for_environment(p, env, amap, b.get("name"))
+            return self.send_json(STORE.create(new["name"], new), 201)
         p.pop("id", None)
-        self.send_json(STORE.create(f"{p.get('name')} (copia)", p), 201)
+        self.send_json(STORE.create(b.get("name") or f"{p.get('name')} (copia)", p), 201)
+
+    def api_compare(self, a, b):
+        self.send_json(comparer.compare(STORE.get(a), STORE.get(b)))
 
     def api_import(self):
         b = self.body()
@@ -237,6 +250,7 @@ ROUTES = [
     ("GET", rf"/api/projects/{P}/export\.md", Handler.api_export_md),
     ("GET", rf"/api/projects/{P}/export\.json", Handler.api_export_json),
     ("GET", rf"/api/projects/{P}/backups", Handler.api_backups),
+    ("GET", rf"/api/compare/{P}/{P}", Handler.api_compare),
     ("POST", rf"/api/projects/{P}/backups/(\d{{8}}-\d{{6}})/restore", Handler.api_restore),
 ]
 

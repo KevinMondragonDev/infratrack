@@ -94,6 +94,33 @@ Las reglas viven en `copilot.py` y se ejecutan localmente cada vez que cambias a
   Athena sin límite de escaneo, DLQ, visibility timeout vs timeout de Lambda, logs.
 - **Seguimiento**: configuración requerida incompleta, componentes sin conexiones, terraformado sin aprobar.
 
+### Diagramas de proyectos reales
+
+- **Zona / Workspace** (contenedor): agrupa visualmente (orquestación, datos, seguridad corporativa, pipeline IaC…)
+  con nombre, color y descripción, y arrastra sus componentes. No cambia la evaluación de seguridad.
+- **Sistemas externos con comportamiento propio**: identidad corporativa (Azure AD / Entra ID), proxy y firewall
+  corporativos, seguridad externa (Wiz, Sysdig), observabilidad (Dynatrace, Alma), CI/CD e IaC (Terraform Enterprise,
+  GitHub), almacenamiento externo (Azure Blob), plataformas de datos (Snowflake, Adobe AEP), sistemas origen y un
+  **Externo personalizado** con nombre, abreviatura y color. El Copilot distingue red corporativa de internet, genera
+  el rol con ExternalId/OIDC para terceros y avisa de llaves de larga duración.
+- **Salida corporativa**: una ruta 0.0.0.0/0 → TGW con inspección declarada, o pasar por el proxy/firewall corporativo,
+  cuenta como salida filtrada.
+- **Flujos**: define FL-01 Ingesta, FL-02 Egresión… en el panel del proyecto, asígnalos a cada conexión (una conexión
+  puede pertenecer a varios) y resalta un flujo con el selector del lienzo.
+- **Nombres legibles**: el nombre se parte en dos líneas, los nodos se pueden redimensionar y el nombre completo aparece
+  al pasar el mouse.
+- **Endpoint en varias subnets**: conecta el VPC endpoint con cada subnet adicional (se dibuja como "desplegado en").
+- **Tags de gobierno**: tags obligatorios y tags por defecto en el proyecto, en la cuenta o en cada componente; el
+  Copilot avisa qué falta y genera el bloque `default_tags` de Terraform (pestaña *Tags y Terraform*).
+- **Ambientes**: *Proyecto → Duplicar como otro ambiente* cambia los IDs de cuenta (p. ej. PRE/PRO) y deja la línea base
+  "Sin confirmar"; *Comparar con otro proyecto* muestra componentes, configuración y conexiones que difieren.
+- **Menos ruido**: la línea base de la cuenta acepta *Sí / No / Sin confirmar* (sólo "No" es falla), una NACL
+  "Pendiente de definición" no genera hallazgos de bloqueo, y un endpoint de interfaz de S3 no exige ruta de Gateway.
+
+> Al actualizar desde una versión anterior, los datos de cuenta guardados como `false` pasan a "Sin confirmar"
+> (antes no se distinguía "no" de "sin confirmar"). Si tienes iconos instalados, la paleta te ofrecerá actualizarlos
+> para los componentes nuevos.
+
 ### Seguridad, cuentas y ambientes
 
 La pestaña **Copilot → Seguridad** muestra la postura por dominios del pilar de seguridad de Well-Architected
