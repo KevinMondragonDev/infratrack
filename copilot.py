@@ -17,6 +17,7 @@ import re
 import unicodedata
 
 from catalog import COMPONENTS_BY_ID, effective_config, missing_required
+from security import SecurityChecks
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 
@@ -51,7 +52,7 @@ def fid(*parts):
     return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12]
 
 
-class Analyzer:
+class Analyzer(SecurityChecks):
     def __init__(self, project):
         self.p = project
         self.settings = project.get("settings") or {}
@@ -141,7 +142,10 @@ class Analyzer:
         for n in self.nodes.values():
             if n["id"] == container["id"]:
                 continue
-            anc = self.vpc_of(n) if container["type"] == "vpc" else self.subnet_of(n)
+            if container["type"] == "account":
+                anc = self.account_of(n)
+            else:
+                anc = self.vpc_of(n) if container["type"] == "vpc" else self.subnet_of(n)
             if anc and anc["id"] == container["id"] and (typ is None or n["type"] == typ):
                 out.append(n)
         return out
@@ -464,7 +468,7 @@ class Analyzer:
 
     # ───────────── IAM ─────────────
     def arn(self, n, kind="main"):
-        r, a, nm = self.region, self.account, self.name(n)
+        r, a, nm = self.region, self.acct_id(n), self.name(n)
         t = n["type"]
         c = self.cfg(n)
         if t == "s3":
@@ -905,6 +909,7 @@ class Analyzer:
 
         # Red: Security Groups
         self._network_for_edge(e, src, tgt, plan)
+        self.cross_account(plan, e, src, tgt)
         return plan
 
     def default_port(self, n):
@@ -976,6 +981,9 @@ class Analyzer:
                     self.add("high", "Red", "NET-APPRUNNER-PRIVATE", f"'{self.label(tgt)}' tiene endpoint privado",
                              "Con endpoint privado App Runner sólo acepta tráfico desde la VPC.",
                              "Desactiva el endpoint privado o pon CloudFront/API Gateway con acceso privado delante.", [tgt], [e])
+            elif tt in ("workspaces", "appstream", "securebrowser"):
+                plan["notes"].append("Los usuarios llegan por el servicio de streaming de AWS: no hace falta exponer la VPC; "
+                                     "restringe por IP/dispositivo y exige MFA.")
             elif tt == "globalaccel":
                 plan["notes"].append("Global Accelerator expone IPs anycast estáticas; el tráfico entra por el edge más cercano.")
             elif tt in COMPUTE or tt in DATASTORES_IN_VPC:
@@ -1500,7 +1508,7 @@ class Analyzer:
                          "Health check tipo ELB requiere target group.", "Conecta un ALB/NLB o usa health check EC2.", [n])
 
         # CloudTrail / CloudWatch / detección
-        if self.nodes and not self.of_type("cloudtrail"):
+        if self.nodes and not self.of_type("cloudtrail") and not any(self.cfg(a).get("cloudtrail") for a in self.of_type("account")):
             self.add("info", "Seguridad", "GOV-CLOUDTRAIL", "No hay CloudTrail en el diagrama",
                      "Auditoría de API (quién hizo qué).", "Confirma que existe un trail organizacional (o agrégalo).", [])
         if self.of_type(*COMPUTE, "emr", "glue") and not self.of_type("cloudwatch"):
@@ -1937,7 +1945,8 @@ class Analyzer:
                          "Completa la pestaña Configuración (o pregúntale al arquitecto).", [n])
             if not self.edges_of(n) and not comp["container"] and n["type"] not in ("igw", "nat", "vpce", "cloudtrail",
                                                                                      "guardduty", "backup", "acm", "route53",
-                                                                                     "sg", "nacl", "rtb", "shield"):
+                                                                                     "sg", "nacl", "rtb", "shield", "account",
+                                                                                     "organization"):
                 self.add("low", "Seguimiento", "TRK-ORPHAN", f"'{self.label(n)}' sin conexiones",
                          "El componente no se relaciona con nada en el diagrama.", "Conéctalo o elimínalo si ya no aplica.", [n])
             if n.get("terraformed") and n.get("status") in ("Requiere cambios", "Borrador"):
@@ -2107,6 +2116,10 @@ class Analyzer:
         self.emit_gw_hints()
         self.check_route_tables()
         self.check_nacls(plans)
+        self.check_accounts()
+        self.check_policies()
+        self.check_security_pack()
+        self.check_enduser()
         pending = self.check_tracking()
         roles = self.consolidate_roles(plans)
         sgs = self.consolidate_sgs(plans)
@@ -2124,6 +2137,7 @@ class Analyzer:
                 f["dismissed"] = dismissed[f["id"]]
         uniq.sort(key=lambda f: (SEVERITIES.index(f["severity"]), f["category"], f["title"]))
         self.findings = uniq
+        posture = self.posture(uniq)
         node_sev = {}
         for f in uniq:
             if f.get("dismissed"):
@@ -2134,7 +2148,7 @@ class Analyzer:
                     node_sev[nid] = f["severity"]
         return {
             "findings": uniq, "plans": plans, "roles": roles, "security_groups": sgs,
-            "sg_suggestions": sg_suggestions, "summary": self.summary(pending),
+            "sg_suggestions": sg_suggestions, "summary": self.summary(pending), "posture": posture,
             "node_severity": node_sev, "parents": self.parent,
         }
 

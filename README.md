@@ -80,6 +80,27 @@ Las reglas viven en `copilot.py` y se ejecutan localmente cada vez que cambias a
   Athena sin límite de escaneo, DLQ, visibility timeout vs timeout de Lambda, logs.
 - **Seguimiento**: configuración requerida incompleta, componentes sin conexiones, terraformado sin aprobar.
 
+### Seguridad, cuentas y ambientes
+
+La pestaña **Copilot → Seguridad** muestra la postura por dominios del pilar de seguridad de Well-Architected
+(identidad, detección, infraestructura, datos, aplicaciones, usuario final, gobierno multi-cuenta y respuesta a
+incidentes). Cada control dice si cumple, falla, está aceptado o sin evaluar, con referencias a AWS Foundational
+Security Best Practices (FSBP) y CIS cuando aplica, y sus hallazgos.
+
+- **Cuenta AWS** (contenedor): arrastra dentro sus VPCs y servicios y marca su línea base (root con MFA, Identity
+  Center, GuardDuty, Security Hub, Config, Access Analyzer, CloudTrail, cifrado EBS por defecto, S3 BPA de cuenta,
+  alertas, logs centralizados…). Con varias cuentas revisa AWS Organizations, guardrails SCP/RCP, administradores
+  delegados, cuentas security-tooling/log-archive y conexiones que mezclan producción con no-producción.
+- **Accesos entre cuentas**: al conectar componentes de cuentas distintas genera la política de recurso del destino
+  (o el rol a asumir con su trust policy) y avisa sobre key policies de KMS.
+- **Políticas escritas a mano**: pega JSON en la política inline de un IAM Role, la bucket policy de S3, la key policy
+  de KMS o la policy de un VPC endpoint y el Copilot detecta `*:*`, comodines de servicio, `iam:PassRole` abierto,
+  `NotAction`, Principal `*` sin condiciones y cuentas que no están en el proyecto.
+- **Usuario final**: Amazon WorkSpaces, AppStream 2.0, WorkSpaces Secure Browser y Directory Service (cifrado de
+  volúmenes, MFA, restricción por IP/dispositivo, fuga de datos por portapapeles/unidades/descargas, IP pública,
+  directorio y 2 AZ).
+- El selector de **ambiente** en la barra del lienzo resalta sólo las cuentas de ese ambiente.
+
 Puedes marcar un hallazgo como **“Aceptar riesgo / no aplica”** con un motivo; queda registrado en el reporte.
 
 ## Copilot IA (opcional)

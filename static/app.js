@@ -19,6 +19,7 @@ const ACCESS = [['read', 'Lectura'], ['write', 'Escritura'], ['readwrite', 'Lect
 const ACCESS_SHORT = { read: 'lee', write: 'escribe', readwrite: 'lee/escribe', invoke: 'invoca', network: 'red' };
 const ASSOC_TYPES = new Set(['sg', 'iam_role']);
 const isAssoc = (e) => { const a = nodeById(e.source), b = nodeById(e.target); return !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type))); };
+const ENV_COLOR = { prod: '#D13212', staging: '#0972D3', qa: '#0972D3', dev: '#0972D3', sandbox: '#7D8998' };
 const SUBNET_STYLE = {
   public: { stroke: '#3F8624', fill: 'rgba(63,134,36,.07)', name: 'Pública' },
   private: { stroke: '#147EBA', fill: 'rgba(20,126,186,.07)', name: 'Privada' },
@@ -30,7 +31,7 @@ const S = {
   projects: [], project: null, analysis: null,
   sel: null, tab: 'general', view: { x: 40, y: 40, k: 1 },
   undo: [], redo: [], drag: null, temp: null, hover: null,
-  highlightPending: false, showFindings: true,
+  highlightPending: false, showFindings: true, envFilter: '',
   saving: false, saveAgain: false, saveT: null, anT: null, anSeq: 0,
   author: lsGet('it.author', ''), ai: { available: false },
   modal: null, mtab: 'findings', sevFilter: new Set(SEVS), showDismissed: false, catFilter: '',
@@ -168,7 +169,7 @@ async function analyzeNow() {
     if (seq !== S.anSeq) return;
     S.analysis = a;
   } catch (e) { console.error(e); return; }
-  renderCanvas(); renderStatusbar(); refreshInspectorAnalysis(); updateCopilotBadge();
+  renderEnvFilter(); renderCanvas(); renderStatusbar(); refreshInspectorAnalysis(); updateCopilotBadge();
   if (S.modal === 'copilot' && S.mtab !== 'ai') renderCopilotTab();
 }
 
@@ -227,6 +228,7 @@ function renderPalette() {
 }
 
 function defaultSize(type) {
+  if (type === 'account') return { w: 1200, h: 800 };
   if (type === 'vpc') return { w: 680, h: 440 };
   if (type === 'subnet') return { w: 320, h: 210 };
   if (type === 'note') return { w: 200, h: 90 };
@@ -319,6 +321,25 @@ function checkSvg(n, x, y) {
     <circle r="9"/><path d="M-4,0 L-1,3.5 L4.5,-3.5"/></g>`;
 }
 
+function accountOf(n) {
+  const parents = S.analysis ? S.analysis.parents : {};
+  let id = n.type === 'account' ? n.id : parents[n.id];
+  while (id) { const p = nodeById(id); if (!p) return null; if (p.type === 'account') return p; id = parents[id]; }
+  return null;
+}
+function envDim(n) {
+  if (!S.envFilter) return false;
+  const a = accountOf(n);
+  return !a || ((a.config || {}).environment || '') !== S.envFilter;
+}
+function renderEnvFilter() {
+  const sel = $('#envFilter');
+  const envs = [...new Set(P().nodes.filter((n) => n.type === 'account').map((n) => (n.config || {}).environment).filter(Boolean))].sort();
+  if (S.envFilter && !envs.includes(S.envFilter)) S.envFilter = '';
+  sel.innerHTML = `<option value="">Todos los ambientes</option>${envs.map((e) => `<option ${e === S.envFilter ? 'selected' : ''}>${esc(e)}</option>`).join('')}`;
+  sel.classList.toggle('hidden', !envs.length);
+}
+
 function portSvg(n) {
   return `<g class="port" data-port="${n.id}"><circle class="port-hit" cx="${n.w}" cy="${n.h / 2}" r="13"/>
     <circle class="port-dot" cx="${n.w}" cy="${n.h / 2}" r="6.5"/><title>Arrastra hacia otro componente para conectar</title></g>`;
@@ -338,16 +359,20 @@ function renderCanvas() {
 
   for (const n of containers) {
     const comp = compOf(n), cfg = n.config || {};
-    const st = n.type === 'subnet' ? SUBNET_STYLE[cfg.tier || 'private'] : { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
+    const envc = ENV_COLOR[cfg.environment] || comp.color;
+    const st = n.type === 'subnet' ? SUBNET_STYLE[cfg.tier || 'private']
+      : n.type === 'account' ? { stroke: envc, fill: 'rgba(127,127,127,.025)', name: '' }
+        : { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
     const sev = sevOf(n.id);
     const sub = n.type === 'vpc' ? [cfg.cidr, cfg.region].filter(Boolean).join(' · ')
-      : [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''].filter(Boolean).join(' · ');
+      : n.type === 'account' ? [cfg.account_id, cfg.environment, cfg.ou].filter(Boolean).join(' · ')
+        : [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''].filter(Boolean).join(' · ');
     const pending = S.highlightPending && !n.terraformed;
-    out += `<g class="container ${isSel('node', n.id) ? 'sel' : ''} ${S.hover === n.id ? 'drop-target' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
+    out += `<g class="container ${isSel('node', n.id) ? 'sel' : ''} ${S.hover === n.id ? 'drop-target' : ''} ${envDim(n) ? 'dim' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
       <rect class="cbody" width="${n.w}" height="${n.h}" rx="10" fill="${st.fill}" stroke="${st.stroke}"/>
       ${pending ? `<rect class="pending-ring" x="-4" y="-4" width="${n.w + 8}" height="${n.h + 8}" rx="13"/>` : ''}
       ${sev ? `<circle class="sevdot sev-${sev}" cx="${n.w - 34}" cy="16" r="5"><title>Hallazgo ${SEV_LABEL[sev]}</title></circle>` : ''}
-      <text class="chead" x="12" y="20" fill="${st.stroke}">${esc(n.type === 'vpc' ? 'VPC · ' : '')}${esc(trunc(n.label, 40))}</text>
+      <text class="chead" x="12" y="20" fill="${st.stroke}">${esc(n.type === 'vpc' ? 'VPC · ' : n.type === 'account' ? 'Cuenta · ' : '')}${esc(trunc(n.label, 40))}</text>
       <text class="csub" x="12" y="35" fill="${st.stroke}">${esc(sub)}</text>
       ${checkSvg(n, n.w - 14, 15)}
       ${portSvg(n)}
@@ -383,7 +408,7 @@ function renderCanvas() {
     }
     const sev = sevOf(n.id);
     const pending = S.highlightPending && comp.terraformable && !n.terraformed;
-    const dim = S.highlightPending && n.terraformed;
+    const dim = (S.highlightPending && n.terraformed) || envDim(n);
     const openQ = (n.questions || []).filter((q) => q.status !== 'closed' && !q.answer).length;
     const nNotes = (n.notes || []).length;
     const h = n.h, w = n.w;
@@ -863,6 +888,7 @@ function projectStatsHtml() {
       <div class="stat"><b>${s.config_pct}%</b><span>configuración completa</span></div>
       <div class="stat"><b>${s.open_questions}</b><span>preguntas abiertas</span></div>
       <div class="stat"><b>${s.edges_terraformed}/${s.edges}</b><span>conexiones terraformadas</span></div>
+      ${S.analysis.posture ? `<div class="stat link" data-open-security="1" style="grid-column:span 2"><b>🛡 ${S.analysis.posture.score ?? '—'}%</b><span>postura de seguridad (${S.analysis.posture.unknown} controles sin evaluar) — ver detalle</span></div>` : ''}
     </div>
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">${SEVS.map((k) => `<span class="chip sev-${k}">${SEV_LABEL[k]}: ${f[k]}</span>`).join('')}</div>
     <table class="tbl"><tr><th>Estado de diseño</th><th>Componentes</th></tr>${STATUSES.map((st) => `<tr><td>${st}</td><td>${s.by_status[st] || 0}</td></tr>`).join('')}</table>`;
@@ -956,11 +982,12 @@ function onInspectorInput(ev) {
 }
 
 function onInspectorClick(ev) {
-  const t = ev.target.closest('button, a, [data-act], .tfbox');
+  const t = ev.target.closest('button, a, [data-act], .tfbox, [data-open-security]');
   if (!t) return;
   const n = S.sel && S.sel.kind === 'node' ? nodeById(S.sel.id) : null;
   const e = S.sel && S.sel.kind === 'edge' ? edgeById(S.sel.id) : null;
   if (t.dataset.tab) { S.tab = t.dataset.tab; renderInspector(); return; }
+  if (t.dataset.openSecurity) { openCopilot('security'); return; }
   if (t.dataset.copy !== undefined) { copy(t.dataset.copy); return; }
   if (t.dataset.goto) { const g = nodeById(t.dataset.goto); if (g) { select('node', g.id, 'general'); centerOn(g); } return; }
   if (t.dataset.seledge) { select('edge', t.dataset.seledge); return; }
@@ -1045,6 +1072,7 @@ function renderStatusbar() {
   if (!A) return;
   const f = A.summary.findings;
   const chips = SEVS.filter((k) => f[k]).map((k) => `<span class="chip sev-${k}" data-sev="${k}">${f[k]} ${SEV_LABEL[k]}</span>`);
+  if (A.posture && A.posture.score !== null) chips.unshift(`<span class="chip sec-chip" data-mtab="security">🛡 Seguridad ${A.posture.score}%${A.posture.unknown ? ` · ${A.posture.unknown} sin evaluar` : ''}</span>`);
   if (A.summary.open_questions) chips.push(`<span class="chip st-open" data-mtab="questions">❓ ${A.summary.open_questions} preguntas abiertas</span>`);
   $('#statusbar').innerHTML = chips.join('');
 }
@@ -1068,10 +1096,11 @@ function openCopilot(tab) {
 
 function renderCopilotTab() {
   const A = S.analysis;
-  const tabs = [['findings', 'Hallazgos'], ['iam', 'Roles IAM'], ['sg', 'Security Groups'], ['questions', 'Preguntas al arquitecto'],
+  const tabs = [['security', 'Seguridad'], ['findings', 'Hallazgos'], ['iam', 'Roles IAM'], ['sg', 'Security Groups'], ['questions', 'Preguntas al arquitecto'],
     ['pending', 'Pendientes de terraform'], ['ai', 'Copilot IA']];
   let c = '';
   if (!A) c = '<p class="muted">Analizando…</p>';
+  else if (S.mtab === 'security') c = securityHtml(A);
   else if (S.mtab === 'findings') {
     const cats = [...new Set(A.findings.map((f) => f.category))].sort();
     const list = A.findings.filter((f) => S.sevFilter.has(f.severity) && (!S.catFilter || f.category === S.catFilter) && (S.showDismissed || !f.dismissed));
@@ -1126,6 +1155,37 @@ function renderCopilotTab() {
   $('#modalBody').innerHTML = `<div class="mtabs">${tabs.map(([k, l]) => `<button class="tab ${S.mtab === k ? 'on' : ''}" data-mtabbtn="${k}">${l}</button>`).join('')}</div><div class="mcontent">${c}</div>`;
 }
 
+const CTRL_STATUS = {
+  pass: ['✔', 'Cumple', 'ok'], fail: ['✖', 'Falla', 'bad'], accepted: ['≈', 'Riesgo aceptado', 'acc'],
+  unknown: ['?', 'Sin evaluar', 'unk'], na: ['—', 'No aplica', 'na'],
+};
+function securityHtml(A) {
+  const p = A.posture;
+  const byId = Object.fromEntries(A.findings.map((f) => [f.id, f]));
+  const scoreTxt = (v) => (v === null || v === undefined ? '—' : v + '%');
+  const bar = (v) => `<div class="meter"><div style="width:${v || 0}%;background:${v >= 80 ? 'var(--ok)' : v >= 50 ? 'var(--sev-medium)' : 'var(--sev-high)'}"></div></div>`;
+  return `<div class="sec-summary">
+      <div class="stat"><b>${scoreTxt(p.score)}</b><span>controles que cumplen (${p.evaluated} evaluados)</span></div>
+      <div class="stat"><b>${p.unknown}</b><span>sin evaluar${p.unknown ? ': agrega una “Cuenta AWS” y marca su línea base' : ''}</span></div>
+      <div class="filters" style="align-self:center"><label class="tgl"><input type="checkbox" id="secShowNa" ${S.secShowNa ? 'checked' : ''}> Mostrar los que no aplican</label></div>
+    </div>
+    <p class="muted">Basado en el pilar de seguridad de AWS Well-Architected. Las referencias FSBP son controles de AWS Foundational
+      Security Best Practices (Security Hub) y CIS indica temas de CIS AWS Foundations: valida la numeración con la versión que uses.</p>
+    ${p.domains.map((d) => `<div class="role-card"><header><b>${esc(d.name)}</b>
+        <span class="muted"> · ${d.pass} cumplen · ${d.fail} fallan${d.accepted ? ` · ${d.accepted} aceptados` : ''}${d.unknown ? ` · ${d.unknown} sin evaluar` : ''}</span>
+        <span style="float:right;font-weight:700">${scoreTxt(d.score)}</span>${bar(d.score)}</header><div>
+        ${d.controls.filter((c) => S.secShowNa || c.status !== 'na').map((c) => {
+          const [icon, label, cls] = CTRL_STATUS[c.status];
+          const fs = c.finding_ids.map((id) => byId[id]).filter(Boolean);
+          return `<details class="ctrl ${cls}"><summary><span class="ctrl-icon">${icon}</span> ${esc(c.title)}
+            ${c.refs.map((r) => `<span class="chip ref">${esc(r)}</span>`).join(' ')}
+            ${c.worst ? `<span class="chip sev-${c.worst}">${SEV_LABEL[c.worst]}</span>` : ''}
+            <span class="muted ctrl-label">${label}${fs.length ? ` · ${fs.length}` : ''}</span></summary>
+            <div class="ctrl-body">${c.hint ? `<p class="muted">${esc(c.hint)}</p>` : ''}
+              ${fs.length ? fs.map((f) => findingHtml(f)).join('') : c.status === 'pass' ? '<p class="muted">Sin hallazgos en los componentes del diagrama.</p>' : ''}</div></details>`;
+        }).join('') || '<p class="muted">Ningún control aplica a este diagrama.</p>'}</div></div>`).join('')}`;
+}
+
 function onModalClick(ev) {
   const t = ev.target.closest('[data-mtabbtn],[data-sevtoggle],[data-copy],[data-goto],[data-seledge],[data-dismiss],[data-undismiss],[data-ai],[data-restore]');
   if (!t) return;
@@ -1143,6 +1203,7 @@ function onModalChange(ev) {
   const t = ev.target;
   if (t.id === 'catFilter') { S.catFilter = t.value; renderCopilotTab(); }
   if (t.id === 'showDismissed') { S.showDismissed = t.checked; renderCopilotTab(); }
+  if (t.id === 'secShowNa') { S.secShowNa = t.checked; renderCopilotTab(); }
   if (t.dataset.tfnode) { const n = nodeById(t.dataset.tfnode); toggleTerraformed(n); setTimeout(renderCopilotTab, 50); }
   if (t.dataset.tfedge) { snapshot(); edgeById(t.dataset.tfedge).terraformed = true; changed(); setTimeout(renderCopilotTab, 50); }
 }
@@ -1240,6 +1301,7 @@ function bind() {
   $('#btnZoomIn').onclick = () => zoomAt(1.2); $('#btnZoomOut').onclick = () => zoomAt(1 / 1.2); $('#btnFit').onclick = fitView;
   $('#tglPending').onchange = (e) => { S.highlightPending = e.target.checked; renderCanvas(); };
   $('#tglFindings').onchange = (e) => { S.showFindings = e.target.checked; renderCanvas(); };
+  $('#envFilter').onchange = (e) => { S.envFilter = e.target.value; renderCanvas(); };
   $('#statusbar').addEventListener('click', (ev) => {
     const ch = ev.target.closest('.chip'); if (!ch) return;
     if (ch.dataset.sev) { S.sevFilter = new Set([ch.dataset.sev]); openCopilot('findings'); } else openCopilot(ch.dataset.mtab);
@@ -1258,6 +1320,7 @@ function bind() {
   document.addEventListener('click', (ev) => { if (!ev.target.closest('.menu-wrap')) $('#menu').classList.add('hidden'); });
   $('#menu').addEventListener('click', (ev) => { const b = ev.target.closest('[data-act]'); if (b) onMenu(b.dataset.act); });
   $('#btnCopilot').onclick = () => { S.sevFilter = new Set(SEVS); openCopilot(); };
+  S.mtab = 'security';
   $('#modalClose').onclick = closeModal;
   $('#modal').addEventListener('click', (ev) => { if (ev.target.id === 'modal') closeModal(); });
   $('#modalBody').addEventListener('click', onModalClick);

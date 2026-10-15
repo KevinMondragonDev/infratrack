@@ -243,3 +243,20 @@ details.tf > summary { cursor: pointer; color: var(--accent); margin: 6px 0; }
 .rules input, .rules select { width: 100%; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2); font-size: 11.5px; min-width: 0; }
 .rules input:focus, .rules select:focus { border-color: var(--accent); background: var(--panel); outline: none; }
 .edge .line.assoc { stroke-dasharray: 2 4; opacity: .7; }
+
+/* Seguridad */
+.env-filter { border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); padding: 2px 6px; font-size: 12px; }
+.sec-chip { background: #232f3e; color: #fff; border-color: transparent; }
+.sec-summary { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin-bottom: 8px; }
+.role-card > header .meter { margin: 6px 0 0; }
+details.ctrl { border-bottom: 1px solid var(--border); padding: 5px 0; }
+details.ctrl:last-child { border-bottom: 0; }
+details.ctrl > summary { cursor: pointer; list-style: none; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+details.ctrl > summary::-webkit-details-marker { display: none; }
+.ctrl-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font-size: 11px; font-weight: 800; color: #fff; flex: none; }
+.ctrl.ok .ctrl-icon { background: var(--ok); } .ctrl.bad .ctrl-icon { background: var(--sev-high); }
+.ctrl.acc .ctrl-icon { background: var(--sev-medium); } .ctrl.unk .ctrl-icon { background: var(--sev-info); } .ctrl.na .ctrl-icon { background: var(--border); color: var(--muted); }
+.ctrl-label { margin-left: auto; font-size: 11.5px; }
+.ctrl-body { padding: 8px 0 4px 26px; }
+.chip.ref { font-size: 10.5px; padding: 0 6px; color: var(--muted); }
+.stat.link { cursor: pointer; } .stat.link:hover { border-color: var(--accent); }
