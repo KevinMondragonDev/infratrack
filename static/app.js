@@ -408,7 +408,7 @@ function containerSubtitle(n, st, cfg) {
   return parts.filter(Boolean).join(' · ');
 }
 
-const flows = () => (P().settings && P().settings.flows) || [];
+const flows = () => P().settings?.flows || [];
 const flowById = (id) => flows().find((f) => f.id === id);
 const flowColor = (f) => NAMED_COLORS[f.color] || f.color || '#7D8998';
 function edgeInFilter(e) { return !S.flowFilter || (e.flows || []).includes(S.flowFilter); }
@@ -1190,7 +1190,7 @@ function onInspectorClick(ev) {
       break;
     case 'del': deleteSelection(); break;
     case 'tagTemplate': {
-      const tpl = (S.analysis && S.analysis.tags && S.analysis.tags.template) || [];
+      const tpl = S.analysis?.tags?.template || [];
       snapshot(); P().settings = P().settings || {};
       const cur = new Set(P().settings.required_tags || []);
       P().settings.required_tags = [...cur, ...tpl.filter((x) => !cur.has(x))];
@@ -1423,8 +1423,8 @@ async function askAI(question, nodeId, outEl) {
 async function onMenu(act) {
   $('#menu').classList.add('hidden');
   const p = P();
-  if (act === 'dup-env') { duplicateForEnvironment(); return; }
-  if (act === 'compare') { openCompare(); return; }
+  if (act === 'dup-env') { await duplicateForEnvironment(); return; }
+  if (act === 'compare') { await openCompare(); return; }
   if (act === 'duplicate') { await flushSave(); const c = await api('POST', `/api/projects/${p.id}/duplicate`); await loadProjects(c.id); toast('Proyecto duplicado'); }
   else if (act === 'delete') {
     if (!confirm(`¿Eliminar “${p.name}”? Se moverá a data/trash.`)) return;
@@ -1452,7 +1452,7 @@ async function duplicateForEnvironment() {
   if (!env) return;
   const map = {};
   for (const a of P().nodes.filter((n) => n.type === 'account')) {
-    const old = (a.config || {}).account_id || '';
+    const old = a.config?.account_id || '';
     const v = prompt(`ID de la cuenta ${env.toUpperCase()} que reemplaza a “${labelOf(a)}” (${old || 'sin ID'}):`, '');
     if (v === null) return;
     if (v.trim() && old) map[old] = v.trim();
@@ -1487,8 +1487,9 @@ async function openCompare() {
       Sólo en B: ${d.edges_only_b.map((x) => `${esc(x.source)} → ${esc(x.target)}`).join('; ') || '—'}<br>
       Distinto acceso/puerto: ${d.edges_changed.map((x) => `${esc(x.source)} → ${esc(x.target)} (${esc(x.a || '—')}${x.port_a ? ':' + esc(x.port_a) : ''} vs ${esc(x.b || '—')}${x.port_b ? ':' + esc(x.port_b) : ''})`).join('; ') || '—'}</p>`;
   };
-  $('#cmpOther').onchange = run;
-  run();
+  const runSafe = () => run().catch((e) => { $('#cmpOut').innerHTML = `<p style="color:var(--danger)">${esc(e.message)}</p>`; });
+  $('#cmpOther').onchange = runSafe;
+  await runSafe();
 }
 
 async function restoreBackup(id) {

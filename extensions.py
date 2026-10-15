@@ -114,51 +114,70 @@ class ExtensionChecks:
         r = self.route_for(rtb, ipaddress.ip_network("0.0.0.0/0"))
         return bool(r and r.get("target_type") in ("tgw", "nfw"))
 
-    def has_private_path(self, src):
+    def has_private_path(self):
         """¿Hay conectividad privada hacia la red corporativa (TGW / VPN / Direct Connect)?"""
         return bool(self.of_type("tgw", "vpn", "dx"))
 
     # ───────────── reglas de externos ─────────────
     def check_externals(self):
-        for n in self.nodes.values():
-            t, c, L = n["type"], self.cfg(n), self.label(n)
-            if t in ("secops", "observability"):
-                roleish = "Rol" in str(c.get("integration", "")) or c.get("integration") == "Mixta"
-                if roleish and tri_state(c.get("external_id")) == TRI_NO:
-                    self.add("medium", "IAM", "EXT-NO-EXTERNALID", f"'{L}' asume un rol sin ExternalId",
-                             "Sin ExternalId otro cliente del proveedor podría usar tu rol (confused deputy).",
-                             "Exige sts:ExternalId en la trust policy del rol del proveedor.", [n])
-            elif t == "cicd":
-                if str(c.get("aws_auth", "")).startswith("Usuario IAM"):
-                    self.add("high", "IAM", "EXT-CICD-KEYS", f"'{L}' despliega con access keys de un usuario IAM",
-                             "Llaves de larga duración con permisos de despliegue: objetivo prioritario de ataque.",
-                             "Usa OIDC (Terraform Enterprise/GitHub soportan dynamic credentials) o un agente con rol.", [n])
-                if not c.get("approvers"):
-                    self.add("low", "Gobierno", "EXT-CICD-APPROVAL", f"'{L}' sin aprobadores de planes definidos",
-                             "No está documentado quién aprueba los planes de Terraform.", "Define aprobadores por ambiente.", [n])
-            elif t == "ext_storage":
-                if str(c.get("auth", "")).startswith(("SAS", "Usuario")) and not c.get("secret_in_sm"):
-                    self.add("medium", "Seguridad", "EXT-STORAGE-SECRET", f"Credencial de '{L}' sin Secrets Manager",
-                             "La llave/SAS de larga duración debe guardarse y rotarse en Secrets Manager.",
-                             "Guárdala en Secrets Manager con rotación y dale sólo GetSecretValue al rol que la usa.", [n])
-            elif t == "idp" and tri_state(c.get("mfa")) == TRI_NO:
-                self.add("high", "Seguridad", "IDP-MFA", f"El IdP '{L}' no exige MFA", "",
-                         "Exige MFA (o passkeys) en el IdP para el acceso a AWS.", [n])
-            elif t == "corp_proxy" and c.get("tls_inspection"):
-                st = tri_state(c.get("ca_distributed"))
-                if st != TRI_YES:
-                    self.add("medium" if st == TRI_NO else "low", "Operación", "PROXY-CA",
-                             f"Proxy '{L}' inspecciona TLS: distribuye su certificado raíz",
-                             "Lambdas, contenedores y AMIs fallarán con errores de certificado si no confían en la CA del proxy.",
-                             "Incluye la CA en las imágenes base, layers de Lambda y AWS_CA_BUNDLE / REQUESTS_CA_BUNDLE.", [n])
-            elif t == "eventbridge" and c.get("scheduler") and not c.get("scheduler_dlq"):
-                self.add("low", "Operación", "SCHED-DLQ", f"Schedules de '{L}' sin DLQ",
-                         "Si el target falla tras los reintentos, la ejecución programada se pierde sin aviso.",
-                         "Configura una DLQ (SQS) en cada schedule y una alarma sobre su profundidad.", [n])
-            elif t == "nacl" and self._nacl_pending(n):
-                self.add("info", "Seguimiento", "NACL-PENDING", f"NACL '{L}' pendiente de definición",
-                         "No se evalúa hasta que se definan sus reglas.", "Define las reglas cuando se cierre el requerimiento.", [n])
-        # Endpoints de interfaz en una sola AZ
+        checks = {"secops": self._check_vendor_role, "observability": self._check_vendor_role, "cicd": self._check_cicd,
+                  "ext_storage": self._check_ext_storage, "idp": self._check_idp, "corp_proxy": self._check_proxy,
+                  "eventbridge": self._check_scheduler, "nacl": self._check_nacl_pending}
+        for n in list(self.nodes.values()):
+            fn = checks.get(n["type"])
+            if fn:
+                fn(n, self.cfg(n), self.label(n))
+        self._check_vpce_azs()
+
+    def _check_vendor_role(self, n, c, L):
+        roleish = "Rol" in str(c.get("integration", "")) or c.get("integration") == "Mixta"
+        if roleish and tri_state(c.get("external_id")) == TRI_NO:
+            self.add("medium", "IAM", "EXT-NO-EXTERNALID", f"'{L}' asume un rol sin ExternalId",
+                     "Sin ExternalId otro cliente del proveedor podría usar tu rol (confused deputy).",
+                     "Exige sts:ExternalId en la trust policy del rol del proveedor.", [n])
+
+    def _check_cicd(self, n, c, L):
+        if str(c.get("aws_auth", "")).startswith("Usuario IAM"):
+            self.add("high", "IAM", "EXT-CICD-KEYS", f"'{L}' despliega con access keys de un usuario IAM",
+                     "Llaves de larga duración con permisos de despliegue: objetivo prioritario de ataque.",
+                     "Usa OIDC (Terraform Enterprise/GitHub soportan dynamic credentials) o un agente con rol.", [n])
+        if not c.get("approvers"):
+            self.add("low", "Gobierno", "EXT-CICD-APPROVAL", f"'{L}' sin aprobadores de planes definidos",
+                     "No está documentado quién aprueba los planes de Terraform.", "Define aprobadores por ambiente.", [n])
+
+    def _check_ext_storage(self, n, c, L):
+        if str(c.get("auth", "")).startswith(("SAS", "Usuario")) and not c.get("secret_in_sm"):
+            self.add("medium", "Seguridad", "EXT-STORAGE-SECRET", f"Credencial de '{L}' sin Secrets Manager",
+                     "La llave/SAS de larga duración debe guardarse y rotarse en Secrets Manager.",
+                     "Guárdala en Secrets Manager con rotación y dale sólo GetSecretValue al rol que la usa.", [n])
+
+    def _check_idp(self, n, c, L):
+        if tri_state(c.get("mfa")) == TRI_NO:
+            self.add("high", "Seguridad", "IDP-MFA", f"El IdP '{L}' no exige MFA", "",
+                     "Exige MFA (o passkeys) en el IdP para el acceso a AWS.", [n])
+
+    def _check_proxy(self, n, c, L):
+        if not c.get("tls_inspection"):
+            return
+        st = tri_state(c.get("ca_distributed"))
+        if st != TRI_YES:
+            self.add("medium" if st == TRI_NO else "low", "Operación", "PROXY-CA",
+                     f"Proxy '{L}' inspecciona TLS: distribuye su certificado raíz",
+                     "Lambdas, contenedores y AMIs fallarán con errores de certificado si no confían en la CA del proxy.",
+                     "Incluye la CA en las imágenes base, layers de Lambda y AWS_CA_BUNDLE / REQUESTS_CA_BUNDLE.", [n])
+
+    def _check_scheduler(self, n, c, L):
+        if c.get("scheduler") and not c.get("scheduler_dlq"):
+            self.add("low", "Operación", "SCHED-DLQ", f"Schedules de '{L}' sin DLQ",
+                     "Si el target falla tras los reintentos, la ejecución programada se pierde sin aviso.",
+                     "Configura una DLQ (SQS) en cada schedule y una alarma sobre su profundidad.", [n])
+
+    def _check_nacl_pending(self, n, c, L):
+        if self._nacl_pending(n):
+            self.add("info", "Seguimiento", "NACL-PENDING", f"NACL '{L}' pendiente de definición",
+                     "No se evalúa hasta que se definan sus reglas.", "Define las reglas cuando se cierre el requerimiento.", [n])
+
+    def _check_vpce_azs(self):
         for ep in self.of_type("vpce"):
             if self.cfg(ep).get("endpoint_type") != "Interface":
                 continue

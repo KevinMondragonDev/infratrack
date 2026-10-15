@@ -1063,7 +1063,7 @@ class Analyzer(SecurityChecks, ExtensionChecks):
                                      else "Otra cuenta AWS: revisa la conexión entre cuentas (rol o política de recurso).")
                 return
             if kind == "corp":
-                if self.has_private_path(src):
+                if self.has_private_path():
                     plan["path"].append("✔ Ruta privada hacia la red corporativa (TGW / VPN / Direct Connect).")
                 else:
                     self.add("high", "Red", "NET-NO-CORP-PATH", f"'{self.label(src)}' no tiene ruta a '{self.label(tgt)}'",

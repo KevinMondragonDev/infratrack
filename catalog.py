@@ -44,12 +44,14 @@ def b(key, label, default=False, **kw):
     return F(key, label, "bool", default=default, **kw)
 
 
-TRI = ["Sí", "No", "Sin confirmar"]
+UNCONFIRMED = "Sin confirmar"
+LOCATION = "Ubicación"
+TRI = ["Sí", "No", UNCONFIRMED]
 
 
 def tri(key, label, **kw):
     """Dato de línea base: Sí / No / Sin confirmar (sin confirmar no cuenta como falla)."""
-    return F(key, label, "select", options=TRI, default="Sin confirmar", tri=True, **kw)
+    return F(key, label, "select", options=TRI, default=UNCONFIRMED, tri=True, **kw)
 
 
 def num(key, label, **kw):
@@ -852,7 +854,7 @@ C("account", "Cuenta AWS", "governance", "ACCT", container=True,
     tri("root_no_keys", "Root sin access keys", required=True),
     tri("identity_center", "Acceso humano por IAM Identity Center (SSO)", required=True),
     num("iam_users_keys", "Usuarios IAM con access keys de larga duración", default=0),
-    tri("password_policy", "Política de contraseñas IAM", show_if={"identity_center": ["No", "Sin confirmar", False, None]}),
+    tri("password_policy", "Política de contraseñas IAM", show_if={"identity_center": ["No", UNCONFIRMED, False, None]}),
     tri("guardduty", "GuardDuty habilitado", required=True),
     tri("securityhub", "Security Hub habilitado", required=True),
     ms("sh_standards", "Estándares de Security Hub", ["AWS Foundational Security Best Practices", "CIS AWS Foundations",
@@ -978,7 +980,7 @@ C("idp", "Identidad corporativa (IdP)", "external", "IdP", terraformable=False,
 C("corp_proxy", "Proxy corporativo", "external", "PRXY", terraformable=False,
   desc="Proxy de salida de la empresa. El tráfico que pasa por aquí cuenta como salida filtrada.", fields=[
     F("product", "Producto", placeholder="Zscaler, Squid, Bluecoat…"),
-    sel("location", "Ubicación", ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor (SSE)"], required=True),
+    sel("location", LOCATION, ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor (SSE)"], required=True),
     b("tls_inspection", "Inspección TLS (reemplaza certificados)"),
     tri("ca_distributed", "Certificado raíz del proxy instalado en imágenes/AMIs/layers", show_if={"tls_inspection": [True]}),
     ta("allowlist", "Allowlist de dominios", placeholder=".adobe.io\n.snowflakecomputing.com"),
@@ -987,7 +989,7 @@ C("corp_proxy", "Proxy corporativo", "external", "PRXY", terraformable=False,
 C("corp_firewall", "Firewall corporativo", "external", "FW", terraformable=False,
   desc="Firewall perimetral de la empresa (Checkpoint, Palo Alto, Fortinet…).", fields=[
     F("product", "Producto", placeholder="Checkpoint / Firewall North"),
-    sel("location", "Ubicación", ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor"], required=True),
+    sel("location", LOCATION, ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor"], required=True),
     ta("rules", "Reglas / tickets de apertura", placeholder="CU-NF15: 443 hacia *.adobe.io"),
 ])
 C("secops", "Seguridad externa (CSPM / CNAPP / SIEM)", "external", "SEC", terraformable=False,
@@ -1032,7 +1034,7 @@ C("ext_dataplatform", "Plataforma de datos externa", "external", "DATA", terrafo
 ])
 C("ext_source", "Sistema origen", "external", "SRC", terraformable=False,
   desc="Sistema que produce los datos (p. ej. C360, core bancario, mainframe).", fields=[
-    sel("location", "Ubicación", ["On-premise", "Internet / SaaS", "Otra cuenta AWS"], required=True),
+    sel("location", LOCATION, ["On-premise", "Internet / SaaS", "Otra cuenta AWS"], required=True),
     F("protocol", "Protocolo / formato", placeholder="SFTP diario, CSV"),
     F("frequency", "Frecuencia", placeholder="Diario 02:00"),
 ])
