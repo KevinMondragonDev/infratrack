@@ -200,7 +200,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_icons_setup(self):
         try:
             res = icons.setup_icons(BASE)
-        except Exception as exc:  # noqa: BLE001 — red, proxy o ZIP inválido
+        # Cualquier falla (red, proxy, ZIP inválido) se informa al usuario con una alternativa.
+        except Exception as exc:  # noqa: BLE001
             return self.error(502, f"No se pudieron descargar los iconos: {exc}. "
                                    "Puedes descargarlo a mano y usar: python3 app.py --setup-icons --icons-zip archivo.zip")
         self.send_json({**res, **icons.available(BASE)})

@@ -20,6 +20,7 @@ const ACCESS_SHORT = { read: 'lee', write: 'escribe', readwrite: 'lee/escribe', 
 const ASSOC_TYPES = new Set(['sg', 'iam_role']);
 const isAssoc = (e) => { const a = nodeById(e.source), b = nodeById(e.target); return !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type))); };
 const ENV_COLOR = { prod: '#D13212', staging: '#0972D3', qa: '#0972D3', dev: '#0972D3', sandbox: '#7D8998' };
+const CONTAINER_PREFIX = { vpc: 'VPC · ', account: 'Cuenta · ' };
 const SUBNET_STYLE = {
   public: { stroke: '#3F8624', fill: 'rgba(63,134,36,.07)', name: 'Pública' },
   private: { stroke: '#147EBA', fill: 'rgba(20,126,186,.07)', name: 'Privada' },
@@ -342,16 +343,18 @@ function renderEnvFilter() {
 
 /* Iconos oficiales de AWS (si se instalaron con --setup-icons) */
 function iconKey(type, cfg) {
-  if (type === 'subnet') return (cfg && cfg.tier === 'public') ? 'subnet-public' : 'subnet-private';
+  if (type === 'subnet') return cfg?.tier === 'public' ? 'subnet-public' : 'subnet-private';
   return type;
 }
 function iconUrl(type, cfg) {
   const k = iconKey(type, cfg);
-  return S.icons.has(k) ? `/icons/aws/${k}.svg?v=${S.iconsVersion || ''}` : null;
+  // La clave viene del catálogo y la versión del servidor: ambas se codifican antes de usarse en HTML.
+  if (!S.icons.has(k)) return null;
+  return `/icons/aws/${encodeURIComponent(k)}.svg?v=${encodeURIComponent(S.iconsVersion || '')}`;
 }
 function badgeHtml(c, cfg, cls = 'ab') {
   const url = iconUrl(c.id, cfg);
-  return url ? `<img class="${cls} icon" src="${url}" alt="" draggable="false">`
+  return url ? `<img class="${cls} icon" src="${esc(url)}" alt="" draggable="false">`
     : `<span class="${cls}" style="background:${c.color}">${esc(c.abbr)}</span>`;
 }
 async function loadIcons() {
@@ -374,6 +377,19 @@ async function installIcons(btn) {
   }
 }
 
+function containerStyle(n, comp, cfg) {
+  if (n.type === 'subnet') return SUBNET_STYLE[cfg.tier || 'private'];
+  if (n.type === 'account') return { stroke: ENV_COLOR[cfg.environment] || comp.color, fill: 'rgba(127,127,127,.025)', name: '' };
+  return { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
+}
+function containerSubtitle(n, st, cfg) {
+  let parts;
+  if (n.type === 'vpc') parts = [cfg.cidr, cfg.region];
+  else if (n.type === 'account') parts = [cfg.account_id, cfg.environment, cfg.ou];
+  else parts = [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''];
+  return parts.filter(Boolean).join(' · ');
+}
+
 function portSvg(n) {
   return `<g class="port" data-port="${n.id}"><circle class="port-hit" cx="${n.w}" cy="${n.h / 2}" r="13"/>
     <circle class="port-dot" cx="${n.w}" cy="${n.h / 2}" r="6.5"/><title>Arrastra hacia otro componente para conectar</title></g>`;
@@ -393,14 +409,9 @@ function renderCanvas() {
 
   for (const n of containers) {
     const comp = compOf(n), cfg = n.config || {};
-    const envc = ENV_COLOR[cfg.environment] || comp.color;
-    const st = n.type === 'subnet' ? SUBNET_STYLE[cfg.tier || 'private']
-      : n.type === 'account' ? { stroke: envc, fill: 'rgba(127,127,127,.025)', name: '' }
-        : { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
+    const st = containerStyle(n, comp, cfg);
     const sev = sevOf(n.id);
-    const sub = n.type === 'vpc' ? [cfg.cidr, cfg.region].filter(Boolean).join(' · ')
-      : n.type === 'account' ? [cfg.account_id, cfg.environment, cfg.ou].filter(Boolean).join(' · ')
-        : [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''].filter(Boolean).join(' · ');
+    const sub = containerSubtitle(n, st, cfg);
     const pending = S.highlightPending && !n.terraformed;
     const cicon = iconUrl(n.type, cfg);
     const cx = cicon ? 40 : 12;
@@ -408,8 +419,8 @@ function renderCanvas() {
       <rect class="cbody" width="${n.w}" height="${n.h}" rx="10" fill="${st.fill}" stroke="${st.stroke}"/>
       ${pending ? `<rect class="pending-ring" x="-4" y="-4" width="${n.w + 8}" height="${n.h + 8}" rx="13"/>` : ''}
       ${sev ? `<circle class="sevdot sev-${sev}" cx="${n.w - 34}" cy="16" r="5"><title>Hallazgo ${SEV_LABEL[sev]}</title></circle>` : ''}
-      ${cicon ? `<image href="${cicon}" x="8" y="7" width="26" height="26"/>` : ''}
-      <text class="chead" x="${cx}" y="20" fill="${st.stroke}">${esc(n.type === 'vpc' ? 'VPC · ' : n.type === 'account' ? 'Cuenta · ' : '')}${esc(trunc(n.label, 40))}</text>
+      ${cicon ? `<image href="${esc(cicon)}" x="8" y="7" width="26" height="26"/>` : ''}
+      <text class="chead" x="${cx}" y="20" fill="${st.stroke}">${esc(CONTAINER_PREFIX[n.type] || '')}${esc(trunc(n.label, 40))}</text>
       <text class="csub" x="${cx}" y="35" fill="${st.stroke}">${esc(sub)}</text>
       ${checkSvg(n, n.w - 14, 15)}
       ${portSvg(n)}
@@ -458,7 +469,7 @@ function renderCanvas() {
       ${pending ? `<rect class="pending-ring" x="-7" y="-7" width="${w + 14}" height="${h + 14}" rx="13"/>` : ''}
       <rect class="body" width="${w}" height="${h}" rx="8"/>
       ${icon ? `<rect class="icon-tile" x="5" y="${(h - 40) / 2}" width="40" height="40" rx="6"/>
-      <image href="${icon}" x="9" y="${(h - 32) / 2}" width="32" height="32"/>`
+      <image href="${esc(icon)}" x="9" y="${(h - 32) / 2}" width="32" height="32"/>`
     : `<path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${comp.color}"/>
       <text class="abbr" x="19" y="${h / 2 + 4}" style="font-size:${comp.abbr.length > 4 ? 9 : 11}px">${esc(comp.abbr)}</text>`}
       <text class="label" x="${tx}" y="${h / 2 - 3}">${esc(trunc(n.label, chars))}</text>

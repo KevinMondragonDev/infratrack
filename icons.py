@@ -18,6 +18,7 @@ ICON_PACKAGE_URL = ("https://d1.awsstatic.com/onedam/marketing-channels/website/
 ICON_PACKAGE_VERSION = "2026-07-31"
 MAX_ZIP_BYTES = 100 * 1024 * 1024
 MAX_SVG_BYTES = 512 * 1024
+WORKSPACES_ICON = "Arch_Amazon-WorkSpaces_64.svg"
 
 # componente → nombre de archivo dentro del paquete (sin carpeta)
 ICON_MAP = {
@@ -99,9 +100,9 @@ ICON_MAP = {
     "organization": "Arch_AWS-Organizations_64.svg",
     # usuario final (AppStream y Secure Browser son parte de la familia WorkSpaces)
     "directory": "Arch_AWS-Directory-Service_64.svg",
-    "workspaces": "Arch_Amazon-WorkSpaces_64.svg",
-    "appstream": "Arch_Amazon-WorkSpaces_64.svg",
-    "securebrowser": "Arch_Amazon-WorkSpaces_64.svg",
+    "workspaces": WORKSPACES_ICON,
+    "appstream": WORKSPACES_ICON,
+    "securebrowser": WORKSPACES_ICON,
     # externos
     "users": "Res_Users_48_Light.svg",
     "saas": "Res_Internet_48_Light.svg",
@@ -144,6 +145,35 @@ def _download(url, dest, log):
     log(f"Descargados {total / 1024 / 1024:.1f} MB")
 
 
+def _extract(z, out_dir):
+    """Copia los SVG del mapa con nombres fijos. Devuelve (instalados, faltantes)."""
+    index = {}
+    for name in z.namelist():
+        if not name.startswith("__MACOSX/") and name.lower().endswith(".svg"):
+            index.setdefault(name.rsplit("/", 1)[-1], name)
+    installed, missing = 0, []
+    for comp_id, filename in ICON_MAP.items():
+        data = _read_safe_svg(z, index.get(filename))
+        if data is None:
+            missing.append(comp_id)
+            continue
+        target = os.path.join(out_dir, f"{comp_id}.svg")  # nombre fijo: nunca se usa la ruta del ZIP
+        with open(target + ".tmp", "wb") as fh:
+            fh.write(data)
+        os.replace(target + ".tmp", target)
+        installed += 1
+    return installed, missing
+
+
+def _read_safe_svg(z, member):
+    if not member or z.getinfo(member).file_size > MAX_SVG_BYTES:
+        return None
+    data = z.read(member)
+    if UNSAFE_SVG.search(data) or b"<svg" not in data[:2000]:
+        return None
+    return data
+
+
 def setup_icons(base, zip_path=None, url=ICON_PACKAGE_URL, log=print):
     """Extrae los iconos que usa la app. Devuelve {'installed': n, 'missing': [...]}."""
     out_dir = icons_dir(base)
@@ -158,30 +188,7 @@ def setup_icons(base, zip_path=None, url=ICON_PACKAGE_URL, log=print):
         if not zipfile.is_zipfile(zip_path):
             raise ValueError("El archivo descargado no es un ZIP válido.")
         with zipfile.ZipFile(zip_path) as z:
-            index = {}
-            for name in z.namelist():
-                if name.startswith("__MACOSX/") or not name.lower().endswith(".svg"):
-                    continue
-                index.setdefault(name.rsplit("/", 1)[-1], name)
-            installed, missing = 0, []
-            for comp_id, filename in ICON_MAP.items():
-                member = index.get(filename)
-                if not member:
-                    missing.append(comp_id)
-                    continue
-                info = z.getinfo(member)
-                if info.file_size > MAX_SVG_BYTES:
-                    missing.append(comp_id)
-                    continue
-                data = z.read(member)
-                if UNSAFE_SVG.search(data) or b"<svg" not in data[:2000]:
-                    missing.append(comp_id)
-                    continue
-                target = os.path.join(out_dir, f"{comp_id}.svg")  # nombre fijo: nunca se usa la ruta del ZIP
-                with open(target + ".tmp", "wb") as fh:
-                    fh.write(data)
-                os.replace(target + ".tmp", target)
-                installed += 1
+            installed, missing = _extract(z, out_dir)
         with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as fh:
             json.dump({"source": url if tmp is not None else os.path.basename(zip_path),
                        "version": ICON_PACKAGE_VERSION, "installed": installed, "missing": missing}, fh, indent=2)
