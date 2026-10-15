@@ -275,3 +275,12 @@ img.icon { object-fit: contain; background: #fff; border-radius: 5px; padding: 1
 .node .nresize { opacity: 0; }
 .node:hover .nresize, .node.sel .nresize { opacity: 1; }
 .rules .rline input[data-plist], .rules .rline select[data-plist] { width: 100%; }
+
+/* Glue Data Catalog */
+.cat-upload { border: 1px dashed var(--accent); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; background: var(--panel-2); display: grid; gap: 6px; font-size: 12px; }
+details.cat-db { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+details.cat-db > summary, details.cat-tb > summary { cursor: pointer; padding: 3px 0; }
+details.cat-tb { border-top: 1px solid var(--border); padding: 4px 0 4px 6px; }
+details.cat-tb[open] { background: var(--panel-2); border-radius: 6px; padding: 4px 8px 8px; }
+.cat-tb-body .field { margin-bottom: 7px; }
+label.pii { display: flex; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); }

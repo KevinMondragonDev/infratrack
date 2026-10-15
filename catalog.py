@@ -664,6 +664,20 @@ C("glue", "Glue", "analytics", "GLUE", vpc="optional", principal="glue.amazonaws
     b("vpc_connection", "Glue connection a VPC (JDBC/recursos privados)"),
     sel("trigger", "Disparador", ["Schedule", "Evento", "Workflow", "Step Functions", "MWAA", "On-demand"]),
 ])
+C("glue_catalog", "Glue Data Catalog", "analytics", "GDC",
+  desc="Catálogo de datos: bases, tablas, columnas y particiones. Sube la salida de `aws glue get-tables` o un CSV.",
+  fields=[
+    sel("catalog_type", "Tipo de catálogo", ["AWS Glue Data Catalog", "S3 Tables (federado)", "Catálogo federado (Redshift / Hive externo)"],
+        default="AWS Glue Data Catalog"),
+    tri("encryption", "Metadatos cifrados en reposo (KMS)", required=True),
+    tri("conn_password_encryption", "Contraseñas de conexiones cifradas"),
+    sel("governance", "Gobierno de permisos", ["Sólo IAM", "Lake Formation - híbrido", "Lake Formation - LF-Tags",
+                                              "Lake Formation - recursos nombrados"], required=True),
+    b("cross_account", "Compartido con otras cuentas (RAM / Lake Formation)"),
+    F("owner", "Data steward / dueño del catálogo"),
+    ta("crawlers", "Crawlers (nombre, ruta, frecuencia)", placeholder="crawler-raw: s3://dlz-raw/ · diario 01:00"),
+    ta("resource_policy", "Resource policy del catálogo (JSON)"),
+])
 C("athena", "Athena", "analytics", "ATH", desc="SQL serverless sobre S3.", fields=[
     F("workgroup", "Workgroup", required=True, placeholder="analytics"),
     sel("engine", "Motor", ["Athena engine v3", "Apache Spark"]),

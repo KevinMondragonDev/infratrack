@@ -5,6 +5,8 @@ Mixin del Analyzer de copilot.py.
 """
 import re
 
+import glue_catalog as gc
+
 TRI_YES, TRI_NO, TRI_UNKNOWN = "yes", "no", "unknown"
 EXTERNAL_TYPES = {"users", "onprem", "saas", "idp", "corp_proxy", "corp_firewall", "secops", "observability", "cicd",
                   "ext_storage", "ext_dataplatform", "ext_source", "custom_ext"}
@@ -186,6 +188,50 @@ class ExtensionChecks:
                 self.add("medium", "Alta disponibilidad", "VPCE-SINGLE-AZ", f"Endpoint '{self.label(ep)}' en una sola AZ",
                          "Si la AZ falla, las cargas de otras AZ pierden el endpoint (y pagan tráfico cross-AZ).",
                          "Despliégalo en una subnet por AZ: conéctalo a las subnets adicionales.", [ep] + subs)
+
+    # ───────────── Glue Data Catalog ─────────────
+    def check_glue_catalogs(self):
+        buckets = {str(self.cfg(b).get("bucket_name") or self.name(b)).lower() for b in self.of_type("s3")}
+        for n in self.of_type("glue_catalog"):
+            c, L = self.cfg(n), self.label(n)
+            tables = [(d["name"], t) for d in (c.get("catalog") or {}).get("databases", []) for t in d.get("tables", [])]
+            if tri_state(c.get("encryption")) == TRI_NO:
+                self.add("medium", "Seguridad", "GLUE-CAT-ENC", f"Metadatos del catálogo '{L}' sin cifrar", "",
+                         "Activa el cifrado de metadatos del Data Catalog con una CMK (y el de contraseñas de conexiones).", [n])
+            pii = [f"{db}.{t['name']}" for db, t in tables if any(x.get("pii") for x in t.get("columns", []) + t.get("partition_keys", []))]
+            if pii and c.get("governance", "Sólo IAM") == "Sólo IAM":
+                self.add("medium", "Seguridad", "GLUE-PII-NO-LF", f"{len(pii)} tabla(s) con datos personales sin Lake Formation",
+                         "Tablas: " + ", ".join(pii[:6]) + ("…" if len(pii) > 6 else "") + ". Con sólo IAM no hay permisos por columna.",
+                         "Gobierna el catálogo con Lake Formation (LF-Tags) para filtrar columnas sensibles.", [n])
+            unclassified = [f"{db}.{t['name']}" for db, t in tables if f"{db}.{t['name']}" in pii and not t.get("sensitivity")]
+            if unclassified:
+                self.add("low", "Datos", "GLUE-SENSITIVITY", f"{len(unclassified)} tabla(s) con datos personales sin clasificar",
+                         "Tablas: " + ", ".join(unclassified[:6]) + ("…" if len(unclassified) > 6 else ""),
+                         "Asigna la sensibilidad (Confidencial / Restringida) en la pestaña Catálogo.", [n])
+            undocumented = [f"{db}.{t['name']}" for db, t in tables if not t.get("description") or not t.get("owner")]
+            if undocumented:
+                self.add("low", "Seguimiento", "GLUE-DOC", f"{len(undocumented)} tabla(s) sin descripción o dueño en '{L}'",
+                         "Tablas: " + ", ".join(undocumented[:6]) + ("…" if len(undocumented) > 6 else ""),
+                         "Documenta propósito y dueño de cada tabla para la revisión con el arquitecto.", [n])
+            no_part = [f"{db}.{t['name']}" for db, t in tables
+                       if t.get("format") in ("Hive - CSV", "Hive - JSON") and not t.get("partition_keys")]
+            if no_part:
+                self.add("low", "Costo", "GLUE-NO-PARTITION", f"{len(no_part)} tabla(s) de texto sin particiones",
+                         "Tablas: " + ", ".join(no_part[:6]), "Particiona (fecha) y usa Parquet/Iceberg para reducir el escaneo.", [n])
+            unknown = sorted({m.group(1) for _, t in tables for m in [re.match(r"s3a?://([^/]+)", t.get("location") or "")]
+                              if m and m.group(1).lower() not in buckets})
+            if unknown and self.of_type("s3"):
+                self.add("info", "Seguimiento", "GLUE-LOCATION", f"Buckets del catálogo que no están en el diagrama",
+                         ", ".join(unknown[:8]), "Agrega esos buckets (o pon su nombre real en el campo 'Nombre del bucket').", [n])
+
+    def glue_catalog_outputs(self):
+        out = {}
+        for n in self.of_type("glue_catalog"):
+            cat = self.cfg(n).get("catalog") or {}
+            a = self.account_of(n)
+            out[n["id"]] = {"stats": gc.stats(cat),
+                            "terraform": gc.terraform(cat, self.cfg(a).get("account_id") if a else None)}
+        return out
 
     def _nacl_pending(self, n):
         return str(self.cfg(n).get("kind", "")).startswith("Pendiente") or n.get("status") == "Pendiente de definición"

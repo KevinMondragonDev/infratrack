@@ -74,6 +74,7 @@ ICON_MAP = {
     # analítica
     "emr": "Arch_Amazon-EMR_64.svg",
     "glue": "Arch_AWS-Glue_64.svg",
+    "glue_catalog": "Res_AWS-Glue_Data-Catalog_48.svg",
     "athena": "Arch_Amazon-Athena_64.svg",
     "kinesis": "Arch_Amazon-Kinesis-Data-Streams_64.svg",
     "firehose": "Arch_Amazon-Data-Firehose_64.svg",

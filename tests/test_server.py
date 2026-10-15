@@ -81,6 +81,15 @@ class ServerTest(unittest.TestCase):
             self.call("POST", f"/api/projects/{pid}/duplicate", {"environment": "pro", "account_map": {"1": "abc"}})
         self.assertEqual(ctx.exception.code, 400)
 
+    def test_glue_import(self):
+        text = '{"TableList": [{"Name": "t1", "DatabaseName": "db1", "StorageDescriptor": {"Columns": [{"Name": "email", "Type": "string"}]}}]}'
+        _, r = self.call("POST", "/api/glue/import", {"text": text, "filename": "t.json", "existing": {}})
+        self.assertEqual(r["stats"]["tables"], 1)
+        self.assertTrue(r["catalog"]["databases"][0]["tables"][0]["columns"][0]["pii"])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.call("POST", "/api/glue/import", {"text": "nada", "filename": "x.json"})
+        self.assertEqual(ctx.exception.code, 400)
+
     def test_path_traversal_blocked(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.call("GET", "/../app.py")

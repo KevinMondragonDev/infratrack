@@ -9,5 +9,3 @@ __pycache__/
 dist/
 .claude/
 
-# Iconos oficiales de AWS: se descargan con `python3 app.py --setup-icons`
-static/icons/aws/
