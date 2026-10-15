@@ -233,3 +233,13 @@ details.tf > summary { cursor: pointer; color: var(--accent); margin: 6px 0; }
   .layout { grid-template-columns: 200px 1fr 330px; }
   .progress { width: 80px; }
 }
+
+/* Tablas de reglas (SG, NACL, rutas) */
+.rules { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.rules .rhead, .rules .rline { display: grid; gap: 4px; padding: 3px 4px; align-items: center; }
+.rules .rhead { background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 600; }
+.rules .rrow { border-top: 1px solid var(--border); padding: 2px 0; }
+.rules .rline.long { padding-top: 0; }
+.rules input, .rules select { width: 100%; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2); font-size: 11.5px; min-width: 0; }
+.rules input:focus, .rules select:focus { border-color: var(--accent); background: var(--panel); outline: none; }
+.edge .line.assoc { stroke-dasharray: 2 4; opacity: .7; }

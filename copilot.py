@@ -26,12 +26,15 @@ VPCE_SERVICES = {
     "kinesis": ["kinesis-streams"], "firehose": ["firehose"], "secrets": ["secretsmanager"], "kms": ["kms"],
     "cloudwatch": ["logs", "monitoring"], "stepfn": ["states"], "glue": ["glue"], "athena": ["athena"],
     "ecr": ["ecr.api", "ecr.dkr", "s3"], "lambda": ["lambda"], "apigw": ["execute-api"],
-    "lakeformation": ["lakeformation"], "ssm": ["ssm"], "cloudtrail": [], "cognito": [],
+    "lakeformation": ["lakeformation"], "ssm": ["ssm"], "cloudtrail": [], "cognito": [], "batch": ["batch"],
 }
 GATEWAY_ENDPOINT_SERVICES = {"s3", "dynamodb"}
-INTERNET_ENTRY = {"alb", "nlb", "apigw", "cloudfront", "cognito", "route53", "waf", "s3"}
+INTERNET_ENTRY = {"alb", "nlb", "apigw", "cloudfront", "cognito", "route53", "waf", "s3", "apprunner", "globalaccel", "beanstalk"}
 COMPUTE = {"ec2", "asg", "ecs", "eks", "lambda"}
-DATASTORES_IN_VPC = {"rds", "aurora", "elasticache", "redshift", "opensearch", "msk", "documentdb", "efs"}
+DATASTORES_IN_VPC = {"rds", "aurora", "elasticache", "redshift", "opensearch", "msk", "documentdb", "efs", "mq"}
+ASSOCIATION_TYPES = {"sg", "iam_role"}  # conexiones que asignan, no que transportan tráfico
+NETWORK_CONTROLS = {"sg", "nacl", "rtb"}
+EPHEMERAL_PORTS = (1024, 32768, 49152, 65535)
 EXTERNAL = {"users", "onprem", "saas"}
 POLLERS = {"sqs", "kinesis", "dynamodb", "msk"}  # fuentes que Lambda "lee" vía event source mapping
 ACCESS_LABEL = {"read": "lee de", "write": "escribe en", "readwrite": "lee y escribe en",
@@ -76,7 +79,7 @@ class Analyzer:
 
     def name(self, n):
         c = self.cfg(n)
-        for k in ("bucket_name", "table_name", "role_name", "workgroup"):
+        for k in ("bucket_name", "table_name", "role_name", "workgroup", "group_name"):
             if c.get(k):
                 return c[k]
         base = slugify(self.label(n))
@@ -288,7 +291,7 @@ class Analyzer:
                 self.add("low", "Red", "NET-IGW-UNUSED", f"IGW sin subnets públicas en '{self.label(v)}'",
                          "Hay un Internet Gateway pero ninguna subnet pública que lo use.",
                          "Elimínalo o agrega subnets públicas (necesarias para NAT y ALB internet-facing).", [v] + igws)
-            workloads = [n for n in self.children(v) if n["type"] not in ("subnet", "igw", "vpce", "nat")]
+            workloads = [n for n in self.children(v) if n["type"] not in ("subnet", "igw", "vpce", "nat", "sg", "nacl", "rtb")]
             if workloads and len(self.azs(subs)) < 2:
                 self.add("medium", "Alta disponibilidad", "HA-SINGLE-AZ", f"VPC '{self.label(v)}' en una sola AZ",
                          "Todas las subnets están en la misma zona: una falla de AZ tumba la carga.",
@@ -398,6 +401,9 @@ class Analyzer:
             endpoints.update(self.cfg(ep).get("services") or [])
         nats = [nn for nn in self.children(v, "nat") if self.tier(nn) == "public"]
         igw = bool(self.children(v, "igw"))
+        rtb = self.rtb_for(self.subnet_of(src))
+        if rtb is not None:
+            return self._egress_by_routes(src, rtb, tgt_services, why, e, endpoints, nats)
         internet = tgt_services is None
         needed = [] if internet else [s for s in tgt_services if s not in endpoints]
         if not internet and not needed:
@@ -517,6 +523,9 @@ class Analyzer:
             "ec2": ("ec2.amazonaws.com", "instance profile de EC2"),
             "asg": ("ec2.amazonaws.com", "instance profile del launch template"),
             "ecs": ("ecs-tasks.amazonaws.com", "task role de ECS (no el execution role)"),
+            "batch": ("ecs-tasks.amazonaws.com", "job role de AWS Batch (el execution role descarga la imagen y escribe logs)"),
+            "apprunner": ("tasks.apprunner.amazonaws.com", "instance role de App Runner"),
+            "beanstalk": ("ec2.amazonaws.com", "instance profile de Beanstalk (aws-elasticbeanstalk-ec2-role)"),
             "eks": ("pods.eks.amazonaws.com", "rol de Pod Identity / IRSA del service account"),
             "glue": ("glue.amazonaws.com", "rol del job de Glue"),
             "stepfn": ("states.amazonaws.com", "rol de la state machine"),
@@ -699,8 +708,10 @@ class Analyzer:
         elif t == "ecr":
             S("EcrAuth", ["ecr:GetAuthorizationToken"], ["*"])
             S("EcrPull", ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], [self.arn(tgt)])
-            if src["type"] == "ecs":
-                notes.append("En ECS estos permisos van en el *execution role* (lo usa el agente para descargar la imagen).")
+            if src["type"] in ("ecs", "batch"):
+                notes.append("En ECS/Batch estos permisos van en el *execution role* (descarga la imagen).")
+            if src["type"] == "apprunner":
+                notes.append("App Runner descarga de ECR privado con un *access role* que confía en build.apprunner.amazonaws.com.")
         elif t == "cloudwatch":
             S("Logs", ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], [self.arn(tgt)])
             S("Metrics", ["cloudwatch:PutMetricData"], ["*"])
@@ -745,6 +756,17 @@ class Analyzer:
         elif t == "lakeformation":
             S("LakeFormation", ["lakeformation:GetDataAccess"], ["*"])
             notes.append("Otorga grants de Lake Formation al rol (SELECT/INSERT/DESCRIBE) o asócialo a LF-Tags.")
+        elif t == "batch":
+            S("SubmitBatchJobs", ["batch:SubmitJob", "batch:DescribeJobs", "batch:ListJobs", "batch:TerminateJob"],
+              [f"arn:aws:batch:{self.region}:{self.account}:job-queue/{self.name(tgt)}*",
+               f"arn:aws:batch:{self.region}:{self.account}:job-definition/{self.name(tgt)}*"])
+            notes.append("Si el job definition usa jobRoleArn, quien envía el job no necesita iam:PassRole; "
+                         "sí lo necesita quien registra el job definition.")
+        elif t == "mq":
+            notes.append("Amazon MQ autentica con usuarios del broker (no IAM): guarda las credenciales en Secrets Manager "
+                         "y dale al rol secretsmanager:GetSecretValue.")
+        elif t == "apprunner" and self.cfg(tgt).get("private_endpoint"):
+            notes.append("El servicio sólo es accesible desde la VPC a través de un VPC interface endpoint de App Runner.")
         elif t == "mwaa":
             S("MwaaApi", ["airflow:CreateCliToken", "airflow:CreateWebLoginToken", "airflow:InvokeRestApi"],
               [f"arn:aws:airflow:{self.region}:{self.account}:environment/{self.name(tgt)}"])
@@ -760,6 +782,25 @@ class Analyzer:
                 "terraform": ""}
 
         if "note" in (st_, tt):
+            return plan
+        if "sg" in (st_, tt):
+            sgn = src if st_ == "sg" else tgt
+            other = tgt if sgn is src else src
+            plan["summary"] = f"Security Group '{self.label(sgn)}' asignado a '{self.label(other)}'"
+            sv, ov = self.vpc_of(sgn), self.vpc_of(other)
+            if other["type"] == "sg":
+                plan["notes"].append("Para permitir tráfico entre SGs, agrega una regla que referencie al otro SG.")
+            elif sv and ov and sv["id"] != ov["id"]:
+                self.add("high", "Red", "SG-VPC-MISMATCH", f"SG '{self.label(sgn)}' de otra VPC en '{self.label(other)}'",
+                         f"El SG pertenece a '{self.label(sv)}' y el componente vive en '{self.label(ov)}'.",
+                         "Un Security Group sólo se puede asociar a recursos de su misma VPC.", [sgn, other], [e])
+            elif not ov and other["type"] not in ("lambda", "emr", "glue", "apprunner", "opensearch"):
+                plan["notes"].append(f"{self.comp(other)['name']} no usa Security Groups (no vive en la VPC).")
+            elif not ov:
+                plan["notes"].append(f"Para usar este SG, {self.comp(other)['name']} debe configurarse dentro de la VPC.")
+            else:
+                plan["notes"].append(f"✔ Las reglas requeridas por las conexiones de '{self.label(other)}' se comparan "
+                                     "con las reglas de este SG.")
             return plan
         if "iam_role" in (st_, tt):
             role = src if st_ == "iam_role" else tgt
@@ -839,10 +880,11 @@ class Analyzer:
         elif st_ in ("alb", "nlb", "cloudfront", "route53", "waf", "vpce", "igw", "nat", "tgw", "peering", "vpn",
                      "netfw", "dnsfw", "acm", "cognito", "s3", "dynamodb", "sqs", "sns", "kinesis", "msk", "rds", "aurora",
                      "elasticache", "efs", "documentdb", "kms", "secrets", "lakeformation", "vpc", "subnet",
-                     "cloudwatch", "cloudtrail", "ecr", "backup", "guardduty", "ssm", "opensearch"):
+                     "cloudwatch", "cloudtrail", "ecr", "backup", "guardduty", "ssm", "opensearch", "mq", "dx",
+                     "globalaccel", "shield", "nacl", "rtb"):
             # Componentes que no son "principal" de una llamada a la API
             principal_node = None if tt not in ("lambda",) else principal_node
-            if st_ in ("s3", "dynamodb", "sqs", "sns", "kinesis") and tt not in ("lambda",):
+            if st_ in ("s3", "dynamodb", "sqs", "sns", "kinesis", "mq") and tt not in ("lambda",):
                 plan["notes"].append(f"{self.comp(src)['name']} no inicia conexiones: ¿la flecha debería ir al revés "
                                      f"({self.label(tgt)} → {self.label(src)})? La dirección indica quién llama a quién.")
                 self.add("low", "Seguimiento", "EDGE-DIRECTION", f"Dirección dudosa: {self.label(src)} → {self.label(tgt)}",
@@ -877,11 +919,24 @@ class Analyzer:
             return {"IAM": 9098, "SASL/SCRAM": 9096, "mTLS": 9094}.get(c.get("auth"), 9092)
         if t == "alb":
             return 443 if "HTTPS:443" in (c.get("listeners") or []) else 80
+        if t == "mq":
+            return 5671 if c.get("engine", "RabbitMQ") == "RabbitMQ" else 61617
+        if t in ("beanstalk", "apprunner"):
+            return 443 if t == "apprunner" else 80
         return {"redshift": 5439, "documentdb": 27017, "elasticache": 11211 if c.get("engine") == "Memcached" else 6379,
                 "opensearch": 443, "efs": 2049, "eks": 443, "mwaa": 443, "vpce": 443, "nlb": c.get("port")}.get(t)
 
     def sg(self, n):
+        """Nombre del SG del componente: el Security Group conectado, o uno sugerido."""
+        if n["type"] == "sg":
+            return self.name(n)
+        for s in sorted(self.neighbors(n, "sg"), key=lambda x: x["id"]):
+            return self.name(s)
         return f"sg-{self.name(n)}"
+
+    def subnet_cidr(self, n):
+        s = self.subnet_of(n)
+        return self.cfg(s).get("cidr") if s else None
 
     def _network_for_edge(self, e, src, tgt, plan):
         st_, tt = src["type"], tgt["type"]
@@ -893,7 +948,8 @@ class Analyzer:
 
         def rule(desc, peer, kind="sg"):
             plan["network"].append({"sg": self.sg(tgt), "direction": "ingress", "protocol": proto, "port": port_s,
-                                    "peer": peer, "peer_kind": kind, "description": desc})
+                                    "peer": peer, "peer_kind": kind, "description": desc,
+                                    "peer_cidr": self.subnet_cidr(src) if kind == "sg" else None})
 
         # Tráfico desde internet / usuarios
         if st_ == "users":
@@ -903,6 +959,25 @@ class Analyzer:
                              "Un balanceador 'internal' no es alcanzable desde internet.",
                              "Cambia el esquema a internet-facing (en subnets públicas) o pon CloudFront/API GW delante.", [tgt], [e])
                 rule("Desde internet", "0.0.0.0/0", "cidr")
+            elif tt == "beanstalk":
+                c = self.cfg(tgt)
+                if c.get("env_type", "Load balanced") == "Load balanced":
+                    plan["notes"].append("Beanstalk crea su balanceador: pon ELBSubnets en subnets públicas y las instancias "
+                                         "en privadas (opción 'ELBScheme: public').")
+                    rule("Desde internet al balanceador de Beanstalk", "0.0.0.0/0", "cidr")
+                elif self.tier(tgt) != "public":
+                    self.add("critical", "Red", "NET-UNREACHABLE", f"'{self.label(tgt)}' no es alcanzable desde internet",
+                             "Entorno single-instance en subnet privada: no hay balanceador ni IP pública.",
+                             "Usa un entorno Load balanced o ubica la instancia en subnet pública.", [tgt], [e])
+                else:
+                    rule("Desde internet (single instance)", "0.0.0.0/0", "cidr")
+            elif tt == "apprunner":
+                if self.cfg(tgt).get("private_endpoint"):
+                    self.add("high", "Red", "NET-APPRUNNER-PRIVATE", f"'{self.label(tgt)}' tiene endpoint privado",
+                             "Con endpoint privado App Runner sólo acepta tráfico desde la VPC.",
+                             "Desactiva el endpoint privado o pon CloudFront/API Gateway con acceso privado delante.", [tgt], [e])
+            elif tt == "globalaccel":
+                plan["notes"].append("Global Accelerator expone IPs anycast estáticas; el tráfico entra por el edge más cercano.")
             elif tt in COMPUTE or tt in DATASTORES_IN_VPC:
                 if self.tier(tgt) == "public":
                     self.add("high", "Red", "NET-DIRECT-EXPOSE", f"Usuarios acceden directo a '{self.label(tgt)}'",
@@ -929,7 +1004,7 @@ class Analyzer:
         if st_ == "onprem":
             conn = self.cfg(src).get("connectivity", "Por definir")
             if tgt_in:
-                has_link = bool(self.of_type("vpn")) or conn in ("Site-to-Site VPN", "Direct Connect")
+                has_link = bool(self.of_type("vpn", "dx")) or conn in ("Site-to-Site VPN", "Direct Connect")
                 if not has_link:
                     self.add("high", "Red", "NET-HYBRID", f"On-premise → '{self.label(tgt)}' sin conectividad híbrida",
                              "El recurso está en subnet privada y no hay VPN/Direct Connect definidos.",
@@ -986,6 +1061,27 @@ class Analyzer:
             return
 
         # Origen fuera de VPC → destino dentro de VPC
+        if tgt_in and not src_in and st_ == "globalaccel":
+            if self.cfg(src).get("client_ip_preservation", True):
+                rule("Clientes vía Global Accelerator (IP original preservada)", "0.0.0.0/0", "cidr")
+                plan["notes"].append("Con preservación de IP el SG del endpoint ve la IP real del cliente: permite esos rangos.")
+            else:
+                rule("Desde Global Accelerator", "<rangos de GA>", "cidr")
+            if tt not in ("alb", "nlb", "ec2", "asg"):
+                self.add("medium", "Red", "GA-ENDPOINT", f"Endpoint no soportado: {self.label(src)} → {self.label(tgt)}",
+                         "Global Accelerator sólo enruta a ALB, NLB, instancias EC2 o Elastic IPs.",
+                         "Pon un ALB/NLB delante del servicio.", [src, tgt], [e])
+            return
+        if tgt_in and not src_in and st_ == "apprunner":
+            if self.cfg(src).get("vpc_connector"):
+                rule(f"Desde VPC connector de {self.label(src)}", f"sg-{self.name(src)}-connector")
+                plan["path"].append("✔ Sale por el VPC connector (subnets privadas). Desde entonces, la salida de App Runner "
+                                    "a internet requiere NAT en esas subnets.")
+            else:
+                self.add("high", "Red", "NET-APPRUNNER-CONNECTOR", f"'{self.label(src)}' no puede llegar a '{self.label(tgt)}'",
+                         "App Runner sin VPC connector sólo sale a internet; no alcanza recursos en subnets privadas.",
+                         "Activa un VPC connector con subnets privadas y un SG que el destino permita.", [src, tgt], [e])
+            return
         if tgt_in and not src_in:
             if st_ in ("lambda", "glue", "emr", "opensearch") and tt not in ("alb", "nlb") or \
                     (st_ in ("lambda", "glue", "emr") and tt in ("alb", "nlb") and self.cfg(tgt).get("scheme") == "internal"):
@@ -1016,10 +1112,25 @@ class Analyzer:
                              "En SG usa el CIDR de la otra VPC (SG referencing sólo funciona con peering en la misma región).",
                              [src, tgt, sv, tv], [e])
                 rule(f"Desde {self.label(src)} (otra VPC)", self.cfg(sv).get("cidr") or "<cidr-vpc-origen>", "cidr")
+                for a, b_ in ((src, tv), (tgt, sv)):
+                    rt = self.rtb_for(self.subnet_of(a))
+                    try:
+                        dest = ipaddress.ip_network(self.cfg(b_).get("cidr") or "", strict=False)
+                    except ValueError:
+                        continue
+                    if rt is None:
+                        continue
+                    r = self.route_for(rt, dest)
+                    if not r or r.get("target_type") not in ("tgw", "pcx", "nfw"):
+                        self.add("high", "Red", "RTB-CROSS-VPC", f"Falta ruta hacia '{self.label(b_)}' en '{self.label(rt)}'",
+                                 f"El tráfico {self.label(src)} → {self.label(tgt)} necesita {dest} → tgw/pcx en la tabla "
+                                 f"de '{self.label(self.subnet_of(a))}' (ida y vuelta).",
+                                 f"Agrega la ruta {dest} → tgw (o pcx) en '{self.label(rt)}'.", [rt, a], [e])
             else:
                 rule(f"Desde {self.label(src)}", self.sg(src))
                 plan["network"].append({"sg": self.sg(src), "direction": "egress", "protocol": proto, "port": port_s,
-                                        "peer": self.sg(tgt), "peer_kind": "sg", "description": f"Hacia {self.label(tgt)}"})
+                                        "peer": self.sg(tgt), "peer_kind": "sg", "description": f"Hacia {self.label(tgt)}",
+                                        "peer_cidr": self.subnet_cidr(tgt)})
             if tt in ("alb", "nlb") and st_ not in ("alb", "nlb") and self.cfg(tgt).get("scheme") == "internet-facing":
                 plan["notes"].append("Tráfico interno hacia un balanceador internet-facing sale por internet; usa uno interno.")
             if tt in COMPUTE and not port:
@@ -1265,6 +1376,100 @@ class Analyzer:
                 if self.tier(n) in ("private", "isolated"):
                     self._needs_services(n, ["s3", "logs", "monitoring", "sqs", "airflow.api", "airflow.env"],
                                          "MWAA necesita S3, CloudWatch, SQS y endpoints de Airflow")
+            elif t == "batch":
+                if c.get("compute") in ("Fargate Spot", "EC2 Spot") and not c.get("retries"):
+                    self.add("medium", "Operación", "BATCH-SPOT-RETRY", f"Batch '{L}' en Spot sin reintentos",
+                             "Las interrupciones de Spot terminan los jobs; sin reintentos se pierden.",
+                             "Configura retryStrategy (2-3 intentos) con evaluateOnExit para 'Host EC2*'.", [n])
+                elif not c.get("retries"):
+                    self.add("low", "Operación", "BATCH-RETRY", f"Batch '{L}' sin reintentos", "",
+                             "Define retryStrategy en el job definition.", [n])
+                if c.get("compute") in ("Fargate", "EC2 On-Demand") and not self.is_prod():
+                    self.add("info", "Costo", "BATCH-SPOT", f"Evalúa Spot para '{L}'",
+                             "Los jobs por lotes reintentables suelen tolerar interrupciones.",
+                             "Usa un compute environment Spot (con On-Demand de respaldo en la cola).", [n])
+                if not c.get("timeout"):
+                    self.add("low", "Costo", "BATCH-TIMEOUT", f"Jobs de '{L}' sin timeout",
+                             "Un job colgado consume capacidad indefinidamente.", "Define attemptDurationSeconds.", [n])
+                if self.tier(n) in ("private", "isolated"):
+                    if c.get("image_source", "ECR") == "ECR":
+                        self._needs_services(n, ["ecr.api", "ecr.dkr", "s3", "logs", "batch"], "descarga imágenes de ECR")
+                    else:
+                        self._needs_internet(n, "descarga imágenes de un registry público")
+            elif t == "apprunner":
+                if (c.get("min_instances") or 1) < 1:
+                    self.add("medium", "Operación", "AR-MIN", f"App Runner '{L}' con 0 instancias mínimas", "",
+                             "El mínimo permitido es 1 instancia aprovisionada.", [n])
+                if c.get("vpc_connector") and any(self.nodes[e["target"]]["type"] == "saas" for e in self.out_edges(n)):
+                    self.add("medium", "Red", "AR-CONNECTOR-EGRESS", f"'{L}' sale a internet con VPC connector",
+                             "Con VPC connector todo el egress va por la VPC: las subnets del connector necesitan NAT.",
+                             "Asegura NAT Gateway en las subnets del connector.", [n])
+            elif t == "beanstalk":
+                if c.get("deploy_policy") == "All at once":
+                    self.add("medium" if self.is_prod() else "low", "Operación", "EB-DEPLOY", f"'{L}' despliega 'All at once'",
+                             "Todas las instancias se actualizan a la vez: hay downtime en cada despliegue.",
+                             "Usa Immutable, Rolling with additional batch o Traffic splitting.", [n])
+                if c.get("env_type") == "Single instance" and self.is_prod():
+                    self.add("medium", "Alta disponibilidad", "EB-SINGLE", f"'{L}' es single instance en producción",
+                             "Sin balanceador ni segunda instancia.", "Usa un entorno Load balanced con mínimo 2 instancias.", [n])
+                if c.get("lb_type") == "Classic (legado)":
+                    self.add("low", "Operación", "EB-CLB", f"'{L}' usa Classic Load Balancer", "Tecnología legada.",
+                             "Migra a Application Load Balancer.", [n])
+                if not c.get("imdsv2", True):
+                    self.add("medium", "Seguridad", "EC2-IMDS", f"'{L}' sin IMDSv2 obligatorio", "", "Activa DisableIMDSv1.", [n])
+                if not c.get("managed_updates", True):
+                    self.add("low", "Seguridad", "EB-UPDATES", f"'{L}' sin actualizaciones administradas",
+                             "La plataforma no recibe parches automáticamente.", "Activa managed platform updates.", [n])
+                if c.get("tier") == "Worker (SQS)" and not self.neighbors(n, "sqs"):
+                    self.add("low", "Seguimiento", "EB-WORKER-SQS", f"Worker '{L}' sin cola SQS",
+                             "El tier Worker consume mensajes de una cola SQS.", "Conecta la cola SQS → Beanstalk.", [n])
+                if self.tier(n) in ("private", "isolated"):
+                    self._needs_services(n, ["elasticbeanstalk", "elasticbeanstalk-health", "cloudformation", "s3", "sqs", "logs"],
+                                         "las instancias se comunican con el servicio de Beanstalk")
+            elif t == "mq":
+                if c.get("deployment") == "Single-instance" and self.is_prod():
+                    self.add("medium", "Alta disponibilidad", "MQ-SINGLE", f"Broker '{L}' single-instance en producción",
+                             "Una falla del broker o de la AZ detiene la mensajería.",
+                             "Usa active/standby (ActiveMQ) o cluster de 3 nodos (RabbitMQ).", [n])
+                dep, eng = c.get("deployment") or "", c.get("engine") or ""
+                if ("RabbitMQ" in dep and eng == "ActiveMQ") or ("ActiveMQ" in dep and eng == "RabbitMQ"):
+                    self.add("medium", "Seguimiento", "MQ-MODE", f"Modo de despliegue inválido en '{L}'",
+                             f"'{dep}' no aplica al motor {eng}.", "Elige el modo correspondiente al motor.", [n])
+                if (c.get("instance") or "").startswith("mq.t3") and self.is_prod():
+                    self.add("low", "Operación", "MQ-T3", f"'{L}' usa mq.t3.micro en producción", "Pensado para pruebas.",
+                             "Usa una clase m5/m7g.", [n])
+            elif t == "globalaccel":
+                if not self.out_edges(n):
+                    self.add("low", "Seguimiento", "GA-NO-ENDPOINT", f"Global Accelerator '{L}' sin endpoints",
+                             "No hay conexiones hacia ALB/NLB/EC2.", "Conéctalo a sus endpoints.", [n])
+                if "," not in (c.get("regions") or "") and self.is_prod():
+                    self.add("info", "Alta disponibilidad", "GA-ONE-REGION", f"'{L}' con una sola región",
+                             "Sin otra región no hay failover regional.", "Agrega un endpoint group en otra región si el RTO lo exige.", [n])
+            elif t == "shield":
+                if c.get("tier") == "Advanced" and not c.get("protected"):
+                    self.add("low", "Seguridad", "SHIELD-NONE", f"Shield Advanced '{L}' sin recursos protegidos",
+                             "Shield Advanced sólo protege los recursos que registras.", "Selecciona los recursos protegidos.", [n])
+                if c.get("tier") == "Advanced" and not c.get("auto_l7"):
+                    self.add("low", "Seguridad", "SHIELD-L7", f"Shield Advanced '{L}' sin mitigación L7 automática", "",
+                             "Actívala (requiere WAF en el recurso).", [n])
+            elif t == "dx":
+                red = c.get("redundancy") or ""
+                if red.startswith("Una conexión"):
+                    self.add("high" if self.is_prod() else "medium", "Alta disponibilidad", "DX-SINGLE",
+                             f"Direct Connect '{L}' sin redundancia",
+                             "Una sola conexión no tiene SLA y es punto único de falla.",
+                             "Usa 2 conexiones en 2 ubicaciones (máxima resiliencia) o, como mínimo, una VPN de respaldo.", [n])
+                    if not c.get("vpn_backup"):
+                        self.add("medium", "Alta disponibilidad", "DX-NO-BACKUP", f"'{L}' sin VPN de respaldo", "",
+                                 "Configura Site-to-Site VPN como respaldo del enlace.", [n])
+                if c.get("macsec") and c.get("conn_type") == "Hosted (vía partner)":
+                    self.add("low", "Seguimiento", "DX-MACSEC", f"MACsec en conexión hosted '{L}'",
+                             "MACsec sólo está disponible en conexiones dedicadas.", "Revisa el tipo de conexión.", [n])
+            elif t == "vpn":
+                if not c.get("two_tunnels", True) and c.get("conn_type") != "Client VPN":
+                    self.add("medium", "Alta disponibilidad", "VPN-TUNNEL", f"VPN '{L}' con un solo túnel",
+                             "AWS da dos túneles en AZ distintas; con uno, el mantenimiento corta la conexión.",
+                             "Configura ambos túneles en tu equipo on-premise.", [n])
             elif t == "nat":
                 if not self.in_edges(n) and not self.out_edges(n):
                     pass
@@ -1301,7 +1506,7 @@ class Analyzer:
         if self.of_type(*COMPUTE, "emr", "glue") and not self.of_type("cloudwatch"):
             self.add("info", "Operación", "OPS-CW", "No hay CloudWatch en el diagrama",
                      "Define retención de logs, alarmas y dashboards.", "Agrega CloudWatch y documenta alarmas clave.", [])
-        public_entries = [n for n in self.of_type("alb", "apigw", "cloudfront")
+        public_entries = [n for n in self.of_type("alb", "apigw", "cloudfront", "apprunner")
                           if any(self.nodes[e["source"]]["type"] == "users" for e in self.in_edges(n))
                           and not self.cfg(n).get("waf") and not self.neighbors(n, "waf")]
         if public_entries:
@@ -1310,6 +1515,10 @@ class Analyzer:
                      "(SQLi, XSS, bots, rate limiting).",
                      "Asocia AWS WAF con las reglas administradas Common, KnownBadInputs e IpReputationList y una regla "
                      "de rate limiting (o marca 'WAF asociado' si ya existe).", public_entries)
+        if self.is_prod() and public_entries and not self.of_type("shield"):
+            self.add("info", "Seguridad", "SEC-SHIELD", "Evalúa Shield Advanced",
+                     "Hay entradas públicas en producción; Shield Standard (incluido) cubre capas 3/4 básicas.",
+                     "Si el negocio es crítico, Shield Advanced añade protección L7, SRT y protección de costos.", public_entries)
         egress_internet = [e for e in self.edges if self.nodes[e["target"]]["type"] in ("saas", "users")
                            and self.in_vpc(self.nodes[e["source"]])]
         if egress_internet and not self.of_type("netfw", "dnsfw"):
@@ -1329,15 +1538,27 @@ class Analyzer:
         for ep in self.children(v, "vpce"):
             eps.update(self.cfg(ep).get("services") or [])
         missing = [s for s in services if s not in eps]
-        nat = [x for x in self.children(v, "nat") if self.tier(x) == "public"]
         if not missing:
             return
-        if self.tier(n) == "isolated" or not nat:
+        if not self.has_egress(n):
             self.add("high", "Red", "NET-SVC-ENDPOINTS", f"'{self.label(n)}' sin ruta a servicios AWS",
                      f"{self.comp(n)['name']} {why}; en subnet {self.tier(n)} sin NAT faltan endpoints: {', '.join(missing)}.",
                      f"Agrega VPC endpoints ({', '.join(missing)}) o un NAT Gateway.", [n, v])
         elif "s3" in missing:
             self._gw_hint(v, "s3", n)
+
+    def has_egress(self, n):
+        """¿El componente tiene salida a internet (NAT/IGW/TGW)? Usa la tabla de rutas si está dibujada."""
+        v = self.vpc_of(n)
+        nat = [x for x in self.children(v, "nat") if self.tier(x) == "public"] if v else []
+        rtb = self.rtb_for(self.subnet_of(n))
+        if rtb is not None:
+            tt = (self.route_for(rtb, ipaddress.ip_network("0.0.0.0/0")) or {}).get("target_type")
+            return (tt == "nat" and bool(nat)) or tt in ("tgw", "nfw", "eni") or \
+                (tt == "igw" and bool(self.cfg(n).get("public_ip") or self.cfg(n).get("public_instances")))
+        if self.tier(n) == "public":
+            return bool(v and self.children(v, "igw"))
+        return self.tier(n) == "private" and bool(nat)
 
     def _gw_hint(self, vpc, svc, node):
         self._gw_hints.setdefault((vpc["id"], svc), set()).add(node["id"])
@@ -1355,10 +1576,352 @@ class Analyzer:
         v = self.vpc_of(n)
         if not v:
             return
-        nat = [x for x in self.children(v, "nat") if self.tier(x) == "public"]
-        if self.tier(n) == "isolated" or (self.tier(n) == "private" and not nat):
+        if not self.has_egress(n):
             self.add("high", "Red", "NET-NEEDS-NAT", f"'{self.label(n)}' necesita salida a internet",
                      f"{self.comp(n)['name']} {why}.", "Agrega un NAT Gateway (o replica la imagen en ECR con endpoints).", [n, v])
+
+    # ───────────── tablas de rutas ─────────────
+    def _controls_in(self, subnet, typ):
+        """Controles (rtb/nacl) asociados explícitamente a la subnet o, si no hay, los de la VPC."""
+        if not subnet:
+            return None
+        explicit = [x for x in self.of_type(typ) if self.subnet_of(x) and self.subnet_of(x)["id"] == subnet["id"]]
+        if explicit:
+            return sorted(explicit, key=lambda x: x["id"])[0]
+        v = self.vpc_of(subnet)
+        default = [x for x in self.of_type(typ) if not self.subnet_of(x) and v and self.vpc_of(x)
+                   and self.vpc_of(x)["id"] == v["id"]]
+        default.sort(key=lambda x: (not self.cfg(x).get("main"), x["id"]))
+        return default[0] if default else None
+
+    def rtb_for(self, subnet):
+        return self._controls_in(subnet, "rtb")
+
+    def nacl_for(self, subnet):
+        return self._controls_in(subnet, "nacl")
+
+    def route_for(self, rtb, dest):
+        """Ruta más específica para `dest` (ip_network o nombre de prefix list 'pl-s3')."""
+        best, best_len = None, -1
+        for r in self.cfg(rtb).get("routes") or []:
+            d = str(r.get("destination") or "").strip().lower()
+            if not d:
+                continue
+            if isinstance(dest, str):
+                if d == dest.lower():
+                    return r
+                continue
+            try:
+                net = ipaddress.ip_network(d, strict=False)
+            except ValueError:
+                continue
+            if net.version == dest.version and dest.subnet_of(net) and net.prefixlen > best_len:
+                best, best_len = r, net.prefixlen
+        return best
+
+    def _egress_by_routes(self, src, rtb, services, why, e, endpoints, nats):
+        v = self.vpc_of(src)
+        reqs, internet = [], services is None
+        needed = []
+        if not internet:
+            for svc in services:
+                if svc not in endpoints:
+                    needed.append(svc)
+                elif svc in GATEWAY_ENDPOINT_SERVICES and self.route_for(rtb, f"pl-{svc}") is None:
+                    self.add("medium", "Red", "RTB-GW-ASSOC", f"Gateway endpoint de {svc} sin asociar a '{self.label(rtb)}'",
+                             f"Existe el endpoint de {svc}, pero la tabla de rutas de '{self.label(self.subnet_of(src))}' "
+                             f"no tiene la ruta pl-{svc} → vpce, así que el tráfico de '{self.label(src)}' no lo usa.",
+                             f"Asocia el Gateway endpoint a la tabla '{self.label(rtb)}' (route_table_ids en Terraform).",
+                             [rtb, src])
+                    needed.append(svc)
+            if not needed:
+                reqs.append(f"✔ Ruta privada vía VPC endpoint ({', '.join(services)}) en '{self.label(rtb)}'.")
+                return reqs
+        default = self.route_for(rtb, ipaddress.ip_network("0.0.0.0/0"))
+        tt = (default or {}).get("target_type")
+        if tt == "igw":
+            if src["type"] in ("lambda", "ecs", "emr", "glue", "mwaa", "batch") and not self.cfg(src).get("public_ip"):
+                self.add("high", "Red", "NET-PUBLIC-NO-IP", f"'{self.label(src)}' en subnet pública sin IP pública",
+                         f"{self.comp(src)['name']} no recibe IP pública, así que no puede salir por el IGW ({why}).",
+                         "Colócalo en una subnet privada cuya tabla tenga 0.0.0.0/0 → NAT.", [src], [e] if e else [])
+                reqs.append("✖ Ruta al IGW pero sin IP pública.")
+            else:
+                reqs.append(f"✔ Sale por Internet Gateway según '{self.label(rtb)}'.")
+        elif tt == "nat":
+            if nats:
+                reqs.append(f"✔ Sale por NAT según '{self.label(rtb)}'.")
+                for svc in needed:
+                    if svc in GATEWAY_ENDPOINT_SERVICES:
+                        self._gw_hint(v, svc, src)
+            else:
+                reqs.append("✖ La ruta apunta a un NAT que no existe en una subnet pública.")
+        elif tt in ("tgw", "nfw", "eni"):
+            reqs.append(f"✔ Sale por {tt} (egress centralizado / inspección). Verifica la ruta de retorno.")
+        else:
+            target = "internet" if internet else ", ".join(needed)
+            self.add("high", "Red", "NET-NO-DEFAULT-ROUTE", f"'{self.label(src)}' no tiene ruta hacia {target}",
+                     f"{self.label(src)} {why}, pero la tabla '{self.label(rtb)}' no tiene ruta 0.0.0.0/0 utilizable"
+                     + (" (blackhole)." if tt == "blackhole" else "."),
+                     "Agrega 0.0.0.0/0 → NAT en la tabla de rutas o VPC endpoints para los servicios que usa.",
+                     [src, rtb], [e] if e else [])
+            reqs.append(f"✖ '{self.label(rtb)}' no tiene ruta 0.0.0.0/0.")
+        return reqs
+
+    def check_route_tables(self):
+        for s in self.of_type("subnet"):
+            explicit = [x for x in self.of_type("rtb") if self.subnet_of(x) and self.subnet_of(x)["id"] == s["id"]]
+            if len(explicit) > 1:
+                self.add("medium", "Red", "RTB-MULTI", f"Varias tablas de rutas en '{self.label(s)}'",
+                         "Una subnet sólo puede asociarse a una tabla de rutas.", "Deja una sola tabla dentro de la subnet.",
+                         [s] + explicit)
+            rtb = self.rtb_for(s)
+            if not rtb:
+                continue
+            tier = self.cfg(s).get("tier", "private")
+            default = self.route_for(rtb, ipaddress.ip_network("0.0.0.0/0"))
+            tt = (default or {}).get("target_type")
+            if tier == "public" and tt != "igw":
+                self.add("high", "Red", "RTB-PUBLIC-NO-IGW", f"Subnet pública '{self.label(s)}' sin ruta al IGW",
+                         f"La tabla '{self.label(rtb)}' no tiene 0.0.0.0/0 → igw, así que la subnet no es pública en realidad.",
+                         "Agrega 0.0.0.0/0 → igw o cambia el tipo de la subnet a privada.", [s, rtb])
+            elif tier == "private" and tt == "igw":
+                self.add("high", "Seguridad", "RTB-PRIVATE-IGW", f"Subnet privada '{self.label(s)}' con ruta al IGW",
+                         f"La tabla '{self.label(rtb)}' envía 0.0.0.0/0 al IGW: la subnet es pública de facto.",
+                         "Usa 0.0.0.0/0 → NAT para subnets privadas.", [s, rtb])
+            elif tier == "isolated" and tt in ("igw", "nat"):
+                self.add("medium", "Red", "RTB-ISOLATED-EGRESS", f"Subnet aislada '{self.label(s)}' con salida a internet",
+                         f"La tabla '{self.label(rtb)}' tiene 0.0.0.0/0 → {tt}.", "Quita la ruta o cambia el tipo de subnet.", [s, rtb])
+        for rtb in self.of_type("rtb"):
+            v = self.vpc_of(rtb)
+            if not v:
+                continue
+            has = {
+                "igw": bool(self.children(v, "igw")),
+                "nat": any(self.tier(n) == "public" for n in self.children(v, "nat")),
+                "vpce": any(self.cfg(x).get("endpoint_type") == "Gateway" for x in self.children(v, "vpce")),
+                "tgw": bool(self.of_type("tgw")), "pcx": bool(self.of_type("peering")),
+                "vgw": bool(self.of_type("vpn", "dx")), "nfw": bool(self.children(v, "netfw")),
+            }
+            names = {"igw": "Internet Gateway", "nat": "NAT Gateway en subnet pública", "vpce": "Gateway endpoint",
+                     "tgw": "Transit Gateway", "pcx": "VPC Peering", "vgw": "VPN / Direct Connect", "nfw": "Network Firewall"}
+            for r in self.cfg(rtb).get("routes") or []:
+                d = str(r.get("destination") or "").strip()
+                t = r.get("target_type")
+                if not d and not t:
+                    continue
+                if d and not d.lower().startswith("pl-"):
+                    try:
+                        ipaddress.ip_network(d, strict=False)
+                    except ValueError:
+                        self.add("medium", "Red", "RTB-BAD-DEST", f"Destino inválido en '{self.label(rtb)}'",
+                                 f"'{d}' no es un CIDR ni un prefix list.", "Usa un CIDR (10.1.0.0/16) o pl-s3 / pl-dynamodb.", [rtb])
+                if t in has and not has[t]:
+                    self.add("high" if t in ("igw", "nat") else "medium", "Red", f"RTB-TARGET-{t.upper()}",
+                             f"'{self.label(rtb)}' apunta a {t} que no existe",
+                             f"La ruta {d or '?'} → {t} requiere {names[t]} en el diagrama.",
+                             f"Agrega el {names[t]} o corrige la ruta.", [rtb, v])
+
+    # ───────────── Network ACLs ─────────────
+    @staticmethod
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def nacl_allows(self, nacl, direction, proto, port, peer):
+        """Evalúa una NACL (stateless, primera regla que coincide gana, deny implícito)."""
+        c = self.cfg(nacl)
+        if str(c.get("kind", "")).startswith("Default"):
+            return True, None
+        rows = [r for r in c.get("rules") or [] if (r.get("direction") or "ingress") == direction]
+        rows.sort(key=lambda r: self._int(r.get("rule_no")) if self._int(r.get("rule_no")) is not None else 32766)
+        for r in rows:
+            rp = (r.get("protocol") or "all").lower()
+            if rp not in ("all", "-1", proto):
+                continue
+            if rp != "all" and rp != "-1":
+                f, t = self._int(r.get("from_port")), self._int(r.get("to_port"))
+                if f is not None or t is not None:
+                    f = f if f is not None else t
+                    t = t if t is not None else f
+                    if not (f <= port <= t):
+                        continue
+            try:
+                net = ipaddress.ip_network(str(r.get("cidr") or "0.0.0.0/0").strip(), strict=False)
+            except ValueError:
+                continue
+            if peer is None:
+                if net.prefixlen != 0:
+                    continue
+            elif peer.version != net.version or not peer.subnet_of(net):
+                continue
+            return (r.get("action") or "allow") == "allow", r
+        return False, None
+
+    def check_nacls(self, plans):
+        for n in self.of_type("nacl"):
+            c = self.cfg(n)
+            rows = c.get("rules") or []
+            if not str(c.get("kind", "")).startswith("Default") and not rows and self.vpc_of(n):
+                self.add("high", "Red", "NACL-EMPTY", f"NACL personalizada '{self.label(n)}' sin reglas",
+                         "Una NACL personalizada sin reglas bloquea todo el tráfico de sus subnets.",
+                         "Agrega reglas de entrada/salida (incluye puertos efímeros 1024-65535 para respuestas).", [n])
+            for d in ("ingress", "egress"):
+                ds = [self._int(r.get("rule_no")) for r in rows if (r.get("direction") or "ingress") == d
+                      and self._int(r.get("rule_no")) is not None]
+                if len(ds) != len(set(ds)):
+                    self.add("medium", "Red", "NACL-DUP", f"Números de regla repetidos en '{self.label(n)}'",
+                             f"Hay reglas {d} con el mismo número.", "Cada regla necesita un número único por dirección.", [n])
+            for r in rows:
+                if (r.get("direction") or "ingress") == "ingress" and (r.get("action") or "allow") == "allow" \
+                        and str(r.get("cidr") or "").strip() in ("0.0.0.0/0", "::/0"):
+                    f, t = self._int(r.get("from_port")), self._int(r.get("to_port"))
+                    if f is not None and any(p in range(f, (t if t is not None else f) + 1) for p in (22, 3389)):
+                        self.add("medium", "Seguridad", "NACL-ADMIN-OPEN", f"'{self.label(n)}' permite SSH/RDP desde internet",
+                                 "Regla de entrada 22/3389 desde 0.0.0.0/0.", "Restringe a la VPN/bastion o usa SSM.", [n])
+
+        def net_of(cidr):
+            try:
+                return ipaddress.ip_network(cidr, strict=False) if cidr else None
+            except ValueError:
+                return None
+
+        for e in self.edges:
+            src, tgt = self.nodes[e["source"]], self.nodes[e["target"]]
+            if ASSOCIATION_TYPES & {src["type"], tgt["type"]} or "note" in (src["type"], tgt["type"]):
+                continue
+            plan = plans.get(e["id"]) or {}
+            if not plan.get("network") and not plan.get("path"):
+                continue
+            ss, ts = self.subnet_of(src), self.subnet_of(tgt)
+            if ss and ts and ss["id"] == ts["id"]:
+                continue  # tráfico dentro de la misma subnet no pasa por la NACL
+            port = self._int(e.get("port") or self.default_port(tgt))
+            if self.comp(tgt)["vpc"] == "never" or (not self.in_vpc(tgt) and tgt["type"] not in EXTERNAL):
+                port = 443
+            if port is None:
+                continue
+            proto = (e.get("protocol") or "tcp").lower()
+            src_net = net_of(self.cfg(ss).get("cidr")) if ss else (
+                net_of(self.cfg(src).get("cidr")) if src["type"] == "onprem" else None)
+            tgt_net = net_of(self.cfg(ts).get("cidr")) if ts else None
+            checks = []
+            tn = self.nacl_for(ts)
+            if tn:
+                checks.append((tn, "ingress", port, src_net, f"entrada {proto}/{port}"))
+                checks += [(tn, "egress", p, src_net, "salida de respuestas (puertos efímeros)") for p in EPHEMERAL_PORTS]
+            sn = self.nacl_for(ss)
+            if sn:
+                checks.append((sn, "egress", port, tgt_net, f"salida {proto}/{port}"))
+                checks += [(sn, "ingress", p, tgt_net, "entrada de respuestas (puertos efímeros)") for p in EPHEMERAL_PORTS]
+            reported = set()
+            for nacl, d, p, peer, what in checks:
+                ok, _ = self.nacl_allows(nacl, d, proto, p, peer)
+                key = (nacl["id"], what)
+                if ok or key in reported:
+                    continue
+                reported.add(key)
+                peer_txt = str(peer) if peer else "0.0.0.0/0"
+                self.add("high", "Red", "NACL-BLOCK", f"NACL '{self.label(nacl)}' bloquea {self.label(src)} → {self.label(tgt)}",
+                         f"Falta permitir la {what} {'desde' if d == 'ingress' else 'hacia'} {peer_txt}. "
+                         "Las NACL son stateless: cada sentido necesita su regla.",
+                         f"Agrega una regla {d} allow {proto} "
+                         + (f"{p}" if "efímeros" not in what else "1024-65535") + f" {peer_txt} en '{self.label(nacl)}'.",
+                         [nacl, src, tgt], [e])
+                plan.setdefault("path", []).append(f"✖ NACL '{self.label(nacl)}' bloquea la {what}.")
+
+    # ───────────── Security Groups ─────────────
+    def _sg_row_covers(self, r, need):
+        rp = (r.get("protocol") or "tcp").lower()
+        if rp not in ("all", "-1", need["protocol"]):
+            return False
+        if str(need["port"]).isdigit() and rp not in ("all", "-1"):
+            p = int(need["port"])
+            f, t = self._int(r.get("from_port")), self._int(r.get("to_port"))
+            if f is not None or t is not None:
+                f = f if f is not None else t
+                t = t if t is not None else f
+                if not (f <= p <= t):
+                    return False
+        rpeer = str(r.get("peer") or "").strip().lower()
+        npeer = str(need["peer"]).strip().lower()
+        if not rpeer:
+            return False
+        if rpeer == npeer:
+            return True
+        try:
+            rnet = ipaddress.ip_network(rpeer, strict=False)
+        except ValueError:
+            return False
+        cand = need.get("peer_cidr") if need.get("peer_kind") == "sg" else need["peer"]
+        try:
+            cnet = ipaddress.ip_network(str(cand), strict=False)
+        except ValueError:
+            return rnet.prefixlen == 0 and need.get("peer_kind") == "cidr"
+        return cnet.version == rnet.version and cnet.subnet_of(rnet)
+
+    def check_security_groups(self, consolidated):
+        required = {g["sg"]: g for g in consolidated}
+        suggestions = {}
+        db_ports = {3306, 5432, 1433, 1521, 6379, 11211, 27017, 9092, 9094, 9096, 9098, 5439, 5671, 61617}
+        for sgn in self.of_type("sg"):
+            c, L, name = self.cfg(sgn), self.label(sgn), self.name(sgn)
+            rows = c.get("rules") or []
+            attached = [x for x in self.neighbors(sgn) if x["type"] != "sg"]
+            if not attached:
+                self.add("low", "Seguimiento", "SG-UNATTACHED", f"Security Group '{L}' sin asignar",
+                         "No está conectado a ningún componente.", "Conéctalo a los recursos que lo usan.", [sgn])
+            for r in rows:
+                if (r.get("direction") or "ingress") != "ingress":
+                    continue
+                if str(r.get("peer") or "").strip() not in ("0.0.0.0/0", "::/0"):
+                    continue
+                proto = (r.get("protocol") or "tcp").lower()
+                fp, tp = self._int(r.get("from_port")), self._int(r.get("to_port"))
+                if fp is None and tp is None:
+                    f, t = 0, 65535
+                else:
+                    f = fp if fp is not None else tp
+                    t = tp if tp is not None else fp
+                ports = set(range(f, t + 1))
+                if proto in ("all", "-1") or (f == 0 and t >= 65535):
+                    self.add("critical", "Seguridad", "SG-OPEN-ALL", f"'{L}' abre todo el tráfico a internet",
+                             "Regla de entrada de todos los puertos desde 0.0.0.0/0.", "Elimínala y abre sólo lo necesario.", [sgn])
+                elif ports & {22, 3389}:
+                    self.add("high", "Seguridad", "SG-OPEN-ADMIN", f"'{L}' expone SSH/RDP a internet",
+                             f"Puertos {f}-{t} desde 0.0.0.0/0.", "Usa SSM Session Manager o restringe a la IP de la VPN.", [sgn])
+                elif ports & db_ports:
+                    self.add("critical", "Seguridad", "SG-OPEN-DB", f"'{L}' expone puertos de datos a internet",
+                             f"Puertos {f}-{t} desde 0.0.0.0/0.", "Permite sólo desde el SG de la aplicación.", [sgn])
+                elif not ports <= {80, 443}:
+                    self.add("medium", "Seguridad", "SG-OPEN-WIDE", f"'{L}' abre puertos no web a internet",
+                             f"Puertos {f}-{t} desde 0.0.0.0/0.", "Restringe el origen o los puertos.", [sgn])
+            if len(rows) > 60:
+                self.add("info", "Operación", "SG-QUOTA", f"'{L}' tiene {len(rows)} reglas",
+                         "La cuota por defecto es 60 reglas de entrada y 60 de salida por SG.", "Agrupa con prefix lists.", [sgn])
+            g = required.get(name)
+            if not g:
+                continue
+            missing = []
+            for d in ("ingress", "egress"):
+                if d == "egress" and c.get("allow_all_egress", True):
+                    continue
+                for need in g[d]:
+                    if not any(self._sg_row_covers(r, need) for r in rows if (r.get("direction") or "ingress") == d):
+                        missing.append(need)
+            if missing:
+                suggestions[sgn["id"]] = [{
+                    "direction": m["direction"], "protocol": m["protocol"] if m["protocol"] in ("tcp", "udp") else "tcp",
+                    "from_port": int(m["port"]) if str(m["port"]).isdigit() else None,
+                    "to_port": int(m["port"]) if str(m["port"]).isdigit() else None,
+                    "peer": m["peer"], "description": m["description"][:120]} for m in missing]
+                lines = [f"{m['direction']} {m['protocol']}/{m['port']} {'desde' if m['direction'] == 'ingress' else 'hacia'} "
+                         f"{m['peer']}" for m in missing]
+                self.add("medium", "Red", "SG-MISSING-RULES", f"Faltan {len(missing)} reglas en '{L}'",
+                         "; ".join(lines[:5]) + ("…" if len(lines) > 5 else ""),
+                         "Abre el SG y usa 'Agregar reglas sugeridas', o declara esas reglas en Terraform.", [sgn])
+        return suggestions
 
     # ───────────── seguimiento ─────────────
     def check_tracking(self):
@@ -1373,7 +1936,8 @@ class Analyzer:
                          "Faltan: " + ", ".join(miss[:8]) + ("…" if len(miss) > 8 else ""),
                          "Completa la pestaña Configuración (o pregúntale al arquitecto).", [n])
             if not self.edges_of(n) and not comp["container"] and n["type"] not in ("igw", "nat", "vpce", "cloudtrail",
-                                                                                     "guardduty", "backup", "acm", "route53"):
+                                                                                     "guardduty", "backup", "acm", "route53",
+                                                                                     "sg", "nacl", "rtb", "shield"):
                 self.add("low", "Seguimiento", "TRK-ORPHAN", f"'{self.label(n)}' sin conexiones",
                          "El componente no se relaciona con nada en el diagrama.", "Conéctalo o elimínalo si ya no aplica.", [n])
             if n.get("terraformed") and n.get("status") in ("Requiere cambios", "Borrador"):
@@ -1382,7 +1946,7 @@ class Analyzer:
         for e in self.edges:
             if not e.get("access"):
                 s, t = self.nodes[e["source"]], self.nodes[e["target"]]
-                if "note" in (s["type"], t["type"]) or "iam_role" in (s["type"], t["type"]) or t["type"] == "kms":
+                if "note" in (s["type"], t["type"]) or ASSOCIATION_TYPES & {s["type"], t["type"]} or t["type"] == "kms":
                     continue
                 self.add("info", "Seguimiento", "TRK-EDGE-ACCESS", f"Conexión sin tipo de acceso: {self.label(s)} → {self.label(t)}",
                          f"Se asumió '{self.access(e)}'.", "Define lectura/escritura/invocación para generar permisos de mínimo privilegio.",
@@ -1541,7 +2105,12 @@ class Analyzer:
         plans = {e["id"]: self.connection_plan(e) for e in self.edges}
         self.check_services()
         self.emit_gw_hints()
+        self.check_route_tables()
+        self.check_nacls(plans)
         pending = self.check_tracking()
+        roles = self.consolidate_roles(plans)
+        sgs = self.consolidate_sgs(plans)
+        sg_suggestions = self.check_security_groups(sgs)
         # de-duplicar por id
         seen, uniq = set(), []
         for f in self.findings:
@@ -1564,8 +2133,8 @@ class Analyzer:
                 if cur is None or SEVERITIES.index(f["severity"]) < SEVERITIES.index(cur):
                     node_sev[nid] = f["severity"]
         return {
-            "findings": uniq, "plans": plans, "roles": self.consolidate_roles(plans),
-            "security_groups": self.consolidate_sgs(plans), "summary": self.summary(pending),
+            "findings": uniq, "plans": plans, "roles": roles, "security_groups": sgs,
+            "sg_suggestions": sg_suggestions, "summary": self.summary(pending),
             "node_severity": node_sev, "parents": self.parent,
         }
 
