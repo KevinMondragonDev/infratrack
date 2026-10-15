@@ -5,6 +5,7 @@ Uso:
     python3 app.py                    # http://127.0.0.1:8765
     python3 app.py --port 9000 --data ./mis-datos
     python3 app.py --host 0.0.0.0     # compartir en la red local (sin autenticación)
+    python3 app.py --setup-icons      # descarga los iconos oficiales de AWS (una vez)
 
 Sólo usa la librería estándar de Python (3.9+). La IA es opcional (pip install anthropic).
 """
@@ -24,6 +25,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 import ai  # noqa: E402
+import icons  # noqa: E402
 from catalog import catalog  # noqa: E402
 from copilot import analyze  # noqa: E402
 from report import build_markdown  # noqa: E402
@@ -130,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-cache")
+        if full.endswith(".svg"):
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
         self.end_headers()
         self.wfile.write(data)
 
@@ -190,6 +194,17 @@ class Handler(BaseHTTPRequestHandler):
         p = STORE.restore_backup(pid, bid)
         self.send_json({"rev": p["rev"]})
 
+    def api_icons(self):
+        self.send_json(icons.available(BASE))
+
+    def api_icons_setup(self):
+        try:
+            res = icons.setup_icons(BASE)
+        except Exception as exc:  # noqa: BLE001 — red, proxy o ZIP inválido
+            return self.error(502, f"No se pudieron descargar los iconos: {exc}. "
+                                   "Puedes descargarlo a mano y usar: python3 app.py --setup-icons --icons-zip archivo.zip")
+        self.send_json({**res, **icons.available(BASE)})
+
     def api_ai_status(self):
         self.send_json(ai.status())
 
@@ -210,6 +225,8 @@ ROUTES = [
     ("POST", r"/api/projects", Handler.api_create),
     ("POST", r"/api/import", Handler.api_import),
     ("POST", r"/api/analyze", Handler.api_analyze),
+    ("GET", r"/api/icons", Handler.api_icons),
+    ("POST", r"/api/icons/setup", Handler.api_icons_setup),
     ("GET", r"/api/ai/status", Handler.api_ai_status),
     ("POST", r"/api/ai/ask", Handler.api_ai_ask),
     ("GET", rf"/api/projects/{P}", Handler.api_get),
@@ -230,7 +247,12 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("INFRATRACK_PORT", 8765)))
     ap.add_argument("--data", default=os.environ.get("INFRATRACK_DATA", os.path.join(BASE, "data")))
     ap.add_argument("--open", action="store_true", help="Abrir el navegador al iniciar")
+    ap.add_argument("--setup-icons", action="store_true", help="Descargar los iconos oficiales de AWS y salir")
+    ap.add_argument("--icons-zip", help="Usar un paquete de iconos ya descargado (ZIP) en lugar de descargarlo")
     args = ap.parse_args()
+    if args.setup_icons or args.icons_zip:
+        icons.setup_icons(BASE, zip_path=args.icons_zip)
+        return
     STORE = Store(args.data)
     if not STORE.list():
         STORE.create(None, sample_project())

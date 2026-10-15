@@ -260,3 +260,11 @@ details.ctrl > summary::-webkit-details-marker { display: none; }
 .ctrl-body { padding: 8px 0 4px 26px; }
 .chip.ref { font-size: 10.5px; padding: 0 6px; color: var(--muted); }
 .stat.link { cursor: pointer; } .stat.link:hover { border-color: var(--accent); }
+
+/* Iconos oficiales de AWS */
+img.icon { object-fit: contain; background: #fff; border-radius: 5px; padding: 1px; }
+.pal-item img.ab { width: 30px; height: 30px; flex: none; }
+.ins-head img.ab { width: 38px; height: 38px; flex: none; }
+.icon-tile { fill: #fff; stroke: var(--border); }
+.icons-hint { display: grid; gap: 6px; border: 1px dashed var(--accent); border-radius: 8px; padding: 8px; margin-bottom: 10px; font-size: 12px; background: var(--panel-2); }
+.icons-hint span { color: var(--muted); }
