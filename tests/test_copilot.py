@@ -203,5 +203,77 @@ class NewServicesTest(unittest.TestCase):
                                   "edges": [E("e", "x", "b", "invoke")]})["plans"]["e"]["identity"][0]["Action"][-1],
                          "batch:TerminateJob")
 
+
+class SecurityTest(unittest.TestCase):
+    def two_accounts(self, prod_cfg=None):
+        prod = dict(account_id="111111111111", environment="prod", **(prod_cfg or {}))
+        return [
+            N("ap", "account", 0, 0, 800, 600, **prod),
+            N("ad", "account", 900, 0, 800, 600, account_id="222222222222", environment="dev"),
+            N("b", "s3", 100, 100, encryption="SSE-KMS"),
+            N("fn", "lambda", 1000, 100),
+        ]
+
+    def test_account_baseline_and_posture(self):
+        nodes = self.two_accounts({"root_mfa": False})
+        a = analyze({"nodes": nodes, "edges": []})
+        r = rules(a)
+        self.assertIn("ACC-ROOT-MFA", r)
+        self.assertIn("ORG-MISSING", r)
+        self.assertIn("ORG-LZ", r)
+        ctrl = {c["id"]: c for d in a["posture"]["domains"] for c in d["controls"]}
+        self.assertEqual(ctrl["IAM-ROOT-MFA"]["status"], "fail")
+        self.assertEqual(ctrl["GOV-ORG"]["status"], "fail")
+        self.assertEqual(ctrl["EUC-ENC"]["status"], "na")
+
+    def test_without_accounts_controls_are_unknown(self):
+        a = analyze({"nodes": [N("b", "s3", 0, 0)], "edges": []})
+        ctrl = {c["id"]: c for d in a["posture"]["domains"] for c in d["controls"]}
+        self.assertEqual(ctrl["IAM-ROOT-MFA"]["status"], "unknown")
+
+    def test_cross_account_resource_policy_and_env_mix(self):
+        nodes = self.two_accounts()
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b", "read")]})
+        plan = a["plans"]["e"]
+        self.assertIn("XACCT-ENV-MIX", rules(a))
+        rp = next(x for x in plan["resource_policies"] if "cross-account" in x["type"])
+        self.assertEqual(rp["statement"]["Principal"]["AWS"], "arn:aws:iam::222222222222:role/fn-role")
+        self.assertIn("s3:GetObject", rp["statement"]["Action"])
+        self.assertTrue(any("key policy" in x for x in plan["notes"]))
+        # El ARN del bucket usa la cuenta donde vive
+        self.assertTrue(any("111111111111" in str(st["Resource"]) or "s3:::" in str(st["Resource"])
+                            for st in plan["identity"]))
+
+    def test_policy_analysis(self):
+        admin = '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}'
+        passrole = '[{"Effect":"Allow","Action":["iam:PassRole","s3:*"],"Resource":"*"}]'
+        public = '{"Statement":{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"}}'
+        ext = '{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:root"},"Action":"s3:GetObject","Resource":"*"}]}'
+        nodes = [N("r1", "iam_role", 0, 0, inline=admin), N("r2", "iam_role", 0, 100, inline=passrole),
+                 N("r3", "iam_role", 0, 200, inline="{bad json"), N("r4", "iam_role", 0, 300, managed_policies="AdministratorAccess"),
+                 N("b1", "s3", 300, 0, bucket_policy=public), N("b2", "s3", 300, 100, bucket_policy=ext)]
+        a = analyze({"settings": {"account_id": "123456789012"}, "nodes": nodes, "edges": []})
+        got = {(f["rule"], f["node_ids"][0]) for f in a["findings"] if f["node_ids"]}
+        for expected in [("POL-ADMIN", "r1"), ("POL-PASSROLE", "r2"), ("POL-SERVICE-WILDCARD", "r2"), ("POL-INVALID", "r3"),
+                         ("POL-ADMIN", "r4"), ("POL-PUBLIC-PRINCIPAL", "b1"), ("POL-EXTERNAL-ACCOUNT", "b2")]:
+            self.assertIn(expected, got)
+
+    def test_security_pack(self):
+        nodes = [N("b", "s3", 0, 0, tls_only=False), N("c", "cognito", 0, 100, mfa="OFF"),
+                 N("r", "ecr", 0, 200, scan_on_push=False), N("t", "cloudtrail", 0, 300, multi_region=False),
+                 N("fn", "lambda", 0, 400, env_vars="DB_PASSWORD=hunter2\nLOG_LEVEL=info")]
+        r = rules(analyze({"nodes": nodes, "edges": []}))
+        for rule in ("S3-TLS", "COG-MFA", "ECR-SCAN", "CT-MULTIREGION", "LAMBDA-SECRET-ENV", "DET-NONE"):
+            self.assertIn(rule, r)
+
+    def test_workspaces(self):
+        nodes = [N("vpc", "vpc", 0, 0, 900, 600, cidr="10.0.0.0/16"),
+                 N("s", "subnet", 20, 50, 400, 500, tier="private", cidr="10.0.1.0/24", az="a"),
+                 N("ws", "workspaces", 40, 100, clipboard=True), N("d", "directory", 40, 300)]
+        nodes[-1]["config"]["type"] = "AD Connector"
+        r = rules(analyze({"nodes": nodes, "edges": []}))
+        for rule in ("WS-ENC", "WS-MFA", "WS-IP", "WS-DLP", "WS-NO-DIR", "DIR-CONNECTOR", "HA-MULTI-AZ-REQ"):
+            self.assertIn(rule, r)
+
 if __name__ == "__main__":
     unittest.main()

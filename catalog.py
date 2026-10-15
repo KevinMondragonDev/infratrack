@@ -20,6 +20,8 @@ CATEGORIES = [
     {"id": "integration", "name": "Integración y mensajería", "color": "#E7157B"},
     {"id": "security", "name": "Seguridad e identidad", "color": "#DD344C"},
     {"id": "management", "name": "Operación y monitoreo", "color": "#B0084D"},
+    {"id": "governance", "name": "Cuentas y gobierno", "color": "#D45B07"},
+    {"id": "enduser", "name": "Escritorios y usuario final", "color": "#7D8998"},
     {"id": "external", "name": "Externos", "color": "#5F6B7A"},
 ]
 
@@ -482,6 +484,8 @@ C("s3", "S3", "storage", "S3", desc="Almacenamiento de objetos / data lake.", fi
     ms("notifications", "Notificaciones de eventos", ["Lambda", "SQS", "SNS", "EventBridge"]),
     b("lake_formation", "Gobernado por Lake Formation"),
     b("access_logs", "Server access logs / CloudTrail data events"),
+    ta("bucket_policy", "Bucket policy (JSON)", placeholder='{"Version": "2012-10-17", "Statement": [...]}',
+       help="Pega la política para que el Copilot la revise (Principal '*', cuentas externas, comodines)."),
     F("volume", "Volumen estimado", placeholder="5 TB/mes, 200 GB/día"),
 ])
 C("efs", "EFS", "storage", "EFS", vpc="required", desc="Sistema de archivos NFS compartido.", fields=[
@@ -765,7 +769,8 @@ C("iam_role", "IAM Role", "security", "IAM", desc="Rol IAM. Conéctalo al compon
                                                              "apigateway.amazonaws.com", "Cuenta / usuarios (SSO)",
                                                              "OIDC (GitHub Actions / CI)"], required=True),
     ta("managed_policies", "Políticas administradas"),
-    ta("inline", "Política inline (notas / JSON)"),
+    ta("inline", "Política inline (JSON)", placeholder='{"Version": "2012-10-17", "Statement": [...]}',
+       help="Si pegas JSON válido, el Copilot revisa comodines, PassRole y privilegios de administrador."),
     b("boundary", "Permissions boundary"),
     num("max_session", "Duración máx. de sesión (h)", default=1),
 ])
@@ -816,6 +821,109 @@ C("cloudtrail", "CloudTrail", "management", "CT", desc="Auditoría de llamadas a
 ])
 C("ssm", "Systems Manager", "management", "SSM", desc="Parameter Store, Session Manager, Patch.", fields=[
     ms("features", "Capacidades", ["Parameter Store", "Session Manager", "Patch Manager", "Run Command", "Automation"]),
+])
+
+# ───────────────────────────── Cuentas y gobierno ─────────────────────────────
+ENVIRONMENTS = ["prod", "staging", "qa", "dev", "sandbox", "shared-services", "network", "security-tooling", "log-archive",
+                "management"]
+C("account", "Cuenta AWS", "governance", "ACCT", container=True,
+  desc="Cuenta AWS (contenedor). Arrastra dentro sus VPCs y servicios; marca su línea base de seguridad.", fields=[
+    F("account_id", "ID de cuenta", required=True, placeholder="123456789012"),
+    sel("environment", "Ambiente / propósito", ENVIRONMENTS, required=True),
+    F("ou", "Unidad organizacional (OU)", placeholder="Workloads/Prod"),
+    F("regions", "Regiones permitidas", placeholder="us-east-1, us-west-2"),
+    b("root_mfa", "Root con MFA (de hardware o passkey)", required=True),
+    b("root_no_keys", "Root sin access keys", required=True),
+    b("identity_center", "Acceso humano por IAM Identity Center (SSO)", required=True),
+    num("iam_users_keys", "Usuarios IAM con access keys de larga duración", default=0),
+    b("password_policy", "Política de contraseñas IAM", show_if={"identity_center": [False, None]}),
+    b("guardduty", "GuardDuty habilitado", required=True),
+    b("securityhub", "Security Hub habilitado", required=True),
+    ms("sh_standards", "Estándares de Security Hub", ["AWS Foundational Security Best Practices", "CIS AWS Foundations",
+                                                     "PCI DSS", "NIST SP 800-53"], show_if={"securityhub": [True]}),
+    b("config", "AWS Config grabando todos los recursos", required=True),
+    b("access_analyzer", "IAM Access Analyzer", required=True),
+    b("cloudtrail", "Cubierta por CloudTrail (trail de organización o propio)", required=True),
+    b("macie", "Macie (descubrimiento de datos sensibles)"),
+    b("inspector", "Inspector (vulnerabilidades EC2/ECR/Lambda)"),
+    b("ebs_default_encryption", "Cifrado EBS por defecto", required=True),
+    b("s3_account_bpa", "S3 Block Public Access a nivel cuenta", required=True),
+    b("imdsv2_default", "IMDSv2 por defecto a nivel cuenta"),
+    b("central_logs", "Logs enviados a la cuenta log-archive"),
+    b("findings_alerts", "Hallazgos enrutados a alertas (EventBridge → SNS/Chat/SIEM)"),
+    b("security_contact", "Contacto alterno de seguridad configurado"),
+    b("budget_alerts", "Alertas de presupuesto / anomalías de costo"),
+])
+C("organization", "AWS Organizations", "governance", "ORG",
+  desc="Organización, Control Tower, SCPs y administradores delegados de seguridad.", fields=[
+    b("control_tower", "Control Tower / landing zone"),
+    F("management_account", "Cuenta de administración", placeholder="111111111111"),
+    ms("scps", "Guardrails (SCP/RCP)", ["Denegar salir de la organización", "Denegar desactivar CloudTrail",
+                                       "Denegar desactivar GuardDuty / Security Hub / Config", "Restringir regiones",
+                                       "Denegar uso de root", "Exigir IMDSv2", "Denegar S3 público", "Exigir cifrado EBS",
+                                       "Denegar crear usuarios IAM / access keys",
+                                       "Sólo identidades de la organización (RCP)"], required=True),
+    ms("delegated", "Administradores delegados (cuenta security-tooling)",
+       ["GuardDuty", "Security Hub", "Config", "IAM Access Analyzer", "Macie", "Inspector", "Firewall Manager", "Detective",
+        "Backup"]),
+    b("tag_policies", "Tag policies"),
+    b("backup_policies", "Backup policies"),
+])
+
+# ───────────────────────────── Usuario final ─────────────────────────────
+C("directory", "Directory Service", "enduser", "AD", vpc="required",
+  desc="Directorio para WorkSpaces/AppStream: Managed Microsoft AD, AD Connector o Simple AD. Requiere 2 subnets en AZ distintas.",
+  fields=[
+    sel("type", "Tipo", ["AWS Managed Microsoft AD (Standard)", "AWS Managed Microsoft AD (Enterprise)", "AD Connector",
+                         "Simple AD"], required=True),
+    F("domain", "Dominio", required=True, placeholder="corp.empresa.com"),
+    b("mfa", "MFA vía RADIUS"),
+    b("trust", "Trust con AD on-premise", show_if={"type": ["AWS Managed Microsoft AD (Standard)", "AWS Managed Microsoft AD (Enterprise)"]}),
+    b("ldaps", "LDAPS habilitado"),
+])
+C("workspaces", "Amazon WorkSpaces", "enduser", "WS", vpc="required",
+  desc="Escritorios virtuales (Personal o Pools). Viven en subnets privadas de 2 AZ y requieren un directorio.", fields=[
+    sel("mode", "Tipo", ["WorkSpaces Personal", "WorkSpaces Pools"], required=True),
+    sel("protocol", "Protocolo de streaming", ["Amazon DCV", "PCoIP"], required=True),
+    F("bundle", "Bundle / imagen", placeholder="Windows Server 2022 Performance"),
+    num("count", "Cantidad de escritorios / usuarios"),
+    sel("running_mode", "Modo de ejecución", ["AutoStop", "AlwaysOn"], show_if={"mode": ["WorkSpaces Personal"]}),
+    num("autostop_hours", "AutoStop tras (horas)", default=1, show_if={"running_mode": ["AutoStop"]}),
+    b("root_encryption", "Cifrado del volumen raíz (KMS)", required=True),
+    b("user_encryption", "Cifrado del volumen de usuario (KMS)", required=True),
+    b("mfa", "MFA para usuarios", required=True),
+    ta("ip_groups", "IP access control groups (CIDR permitidos)", placeholder="203.0.113.0/24 oficina\n198.51.100.10/32 VPN"),
+    b("trusted_devices", "Sólo dispositivos de confianza (certificados)"),
+    ms("clients", "Clientes permitidos", ["Windows", "macOS", "Linux", "iPad/iOS", "Android", "Web", "Chromebook"]),
+    b("clipboard", "Portapapeles hacia el equipo local permitido"),
+    b("local_drives", "Unidades locales / USB redirigidas"),
+    b("printing", "Impresión local permitida"),
+    b("internet", "Acceso a internet desde el escritorio"),
+    b("public_ip", "IP pública por escritorio (en vez de NAT)"),
+])
+C("appstream", "AppStream 2.0", "enduser", "AS2", vpc="required",
+  desc="Streaming de aplicaciones a navegador sin instalar escritorios completos.", fields=[
+    sel("fleet", "Tipo de fleet", ["Elastic", "On-demand", "Always-on"], required=True),
+    F("instance_type", "Tipo de instancia", placeholder="stream.standard.medium"),
+    num("max_capacity", "Capacidad máxima"),
+    sel("auth", "Autenticación", ["SAML 2.0 (IdP corporativo)", "User pool de AppStream", "Directorio (AD)"], required=True),
+    b("default_internet", "Acceso a internet por defecto (IP pública)"),
+    b("clipboard", "Portapapeles hacia el equipo local permitido"),
+    b("file_transfer", "Subir/descargar archivos permitido"),
+    b("printing", "Impresión local permitida"),
+    num("session_hours", "Duración máxima de sesión (h)", default=16),
+    b("persistence", "Persistencia de configuración de usuario"),
+])
+C("securebrowser", "WorkSpaces Secure Browser", "enduser", "WSB",
+  desc="Navegador administrado para acceder a apps web internas/SaaS sin VPN.", fields=[
+    sel("idp", "Proveedor de identidad", ["SAML 2.0", "IAM Identity Center"], required=True),
+    b("clipboard", "Copiar hacia el equipo local permitido"),
+    b("download", "Descargas permitidas"),
+    b("upload", "Subidas permitidas"),
+    b("printing", "Impresión permitida"),
+    ta("ip_access", "IP access settings (CIDR permitidos)"),
+    ta("allowed_urls", "URLs / dominios permitidos"),
+    b("vpc_access", "Accede a apps dentro de la VPC"),
 ])
 
 # ───────────────────────────── Externos ─────────────────────────────

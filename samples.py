@@ -18,6 +18,11 @@ def E(id, s, t, access=None, port=None, **kw):
 def sample_project():
     ts = now_iso()
     nodes = [
+        N("acct", "account", "pedidos-prod", 290, -30, 1240, 820, terraformed=True, status="Aprobado",
+          config={"account_id": "123456789012", "environment": "prod", "ou": "Workloads/Prod", "regions": "us-east-1",
+                  "root_mfa": True, "root_no_keys": True, "identity_center": True, "iam_users_keys": 1,
+                  "guardduty": True, "securityhub": False, "config": True, "access_analyzer": False, "cloudtrail": True,
+                  "ebs_default_encryption": True, "s3_account_bpa": True, "findings_alerts": False}),
         N("vpc1", "vpc", "VPC principal", 320, 40, 760, 700, terraformed=True, status="Aprobado",
           config={"cidr": "10.20.0.0/16", "region": "us-east-1", "flow_logs": False}),
         N("pubA", "subnet", "Pública A", 340, 130, 340, 150, terraformed=True, status="Aprobado",
