@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InfraTrack</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23232F3E'/><path d='M9 17l5 5 9-11' stroke='%23FF9900' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">✓</span> InfraTrack</div>
+  <select id="projectSelect" title="Proyecto"></select>
+  <button id="btnNew" class="btn">+ Nuevo</button>
+  <div class="menu-wrap">
+    <button id="btnMenu" class="btn">Proyecto ▾</button>
+    <div id="menu" class="menu hidden">
+      <button data-act="duplicate">Duplicar proyecto</button>
+      <button data-act="backups">Respaldos automáticos…</button>
+      <hr>
+      <button data-act="export-md">Exportar reporte Markdown (para el arquitecto)</button>
+      <button data-act="export-json">Exportar JSON</button>
+      <button data-act="import">Importar JSON…</button>
+      <button data-act="sample">Crear proyecto de ejemplo</button>
+      <hr>
+      <button data-act="delete" class="danger">Eliminar proyecto</button>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="progress-wrap" title="Componentes terraformados">
+    <span id="progressLabel">0/0 terraformado</span>
+    <div class="progress"><div id="progressBar"></div></div>
+  </div>
+  <span id="saveStatus" class="save-status">—</span>
+  <button id="btnCopilot" class="btn primary">Copilot <span id="copilotBadge" class="badge hidden">0</span></button>
+</header>
+
+<div id="conflict" class="banner hidden">
+  El proyecto cambió en otra pestaña o equipo. <button id="btnReload" class="btn">Recargar</button>
+  <button id="btnForce" class="btn danger">Sobrescribir con mi versión</button>
+</div>
+
+<main class="layout">
+  <aside class="palette">
+    <input id="paletteSearch" type="search" placeholder="Buscar componente…" autocomplete="off">
+    <div id="paletteList"></div>
+    <p class="hint">Arrastra al lienzo. Suelta dentro de una VPC/Subnet para ubicarlo ahí.</p>
+  </aside>
+
+  <section class="canvas-wrap" id="canvasWrap">
+    <div class="toolbar">
+      <button class="tbtn" id="btnUndo" title="Deshacer (Ctrl+Z)">↶</button>
+      <button class="tbtn" id="btnRedo" title="Rehacer (Ctrl+Shift+Z)">↷</button>
+      <span class="sep"></span>
+      <button class="tbtn" id="btnZoomOut" title="Alejar">−</button>
+      <span id="zoomLabel" class="zoom-label">100%</span>
+      <button class="tbtn" id="btnZoomIn" title="Acercar">+</button>
+      <button class="tbtn" id="btnFit" title="Ajustar a pantalla">⤢</button>
+      <span class="sep"></span>
+      <label class="tgl"><input type="checkbox" id="tglPending"> Resaltar pendientes</label>
+      <label class="tgl"><input type="checkbox" id="tglFindings" checked> Hallazgos</label>
+    </div>
+    <svg id="canvas" tabindex="0">
+      <defs>
+        <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="1" class="grid-dot"/>
+        </pattern>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="arrow-head"/>
+        </marker>
+        <marker id="arrowSel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="arrow-head sel"/>
+        </marker>
+        <marker id="arrowOk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="arrow-head ok"/>
+        </marker>
+      </defs>
+      <rect id="gridRect" x="-50000" y="-50000" width="100000" height="100000" fill="url(#grid)"/>
+      <g id="world"></g>
+    </svg>
+    <div id="emptyHint" class="empty-hint hidden">Arrastra componentes desde la izquierda para empezar.<br>
+      Conecta dos componentes arrastrando desde el punto <b>●</b> del borde derecho.</div>
+    <div id="statusbar" class="statusbar"></div>
+  </section>
+
+  <aside class="inspector" id="inspector"></aside>
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="modalTitle"></h2>
+      <button class="btn ghost" id="modalClose">✕</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<input type="file" id="fileImport" accept=".json,application/json" hidden>
+<script src="/app.js"></script>
+</body>
+</html>

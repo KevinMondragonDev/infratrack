@@ -1,0 +1,9 @@
+# Datos locales de proyectos (cada quien guarda los suyos)
+data/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.vscode/
+.idea/
+dist/

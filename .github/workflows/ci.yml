@@ -1,0 +1,68 @@
+name: CI y nightly build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * *" # todos los días 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Pruebas (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.9", "3.11", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compilar módulos
+        run: python -m compileall -q .
+      - name: Pruebas
+        run: python -m unittest discover -s tests -v
+      - name: Sintaxis del frontend
+        if: matrix.os == 'ubuntu-latest'
+        run: node --check static/app.js
+
+  nightly:
+    name: Publicar nightly
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - name: Empaquetar
+        run: |
+          STAMP=$(date -u +%Y%m%d)
+          SHORT=$(git rev-parse --short HEAD)
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          echo "SHORT=$SHORT" >> "$GITHUB_ENV"
+          mkdir -p dist
+          git archive --format=zip --prefix=infratrack/ -o "dist/infratrack-nightly-$STAMP-$SHORT.zip" HEAD
+      - name: Reemplazar release "nightly"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/*.zip \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Nightly $STAMP ($SHORT)" \
+            --notes "Build automático de \`main\` ($SHORT). Descomprime y ejecuta \`python3 app.py --open\`. Puede ser inestable: para uso estable toma una versión etiquetada."

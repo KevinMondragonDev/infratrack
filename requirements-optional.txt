@@ -1,0 +1,2 @@
+# Sólo para el Copilot IA (opcional). La app funciona sin dependencias.
+anthropic
