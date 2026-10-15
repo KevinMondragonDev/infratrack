@@ -82,6 +82,17 @@ def build_markdown(project):
             rows = [(f["label"], cfg.get(f["key"])) for f in visible_fields(comp, cfg) if cfg.get(f["key"]) not in (None, "", [])]
             if rows:
                 L += ["| Configuración | Valor |", "|---|---|"] + [f"| {k} | {_fmt(v)} |" for k, v in rows] + [""]
+            gcat = (n.get("config") or {}).get("catalog") if n["type"] == "glue_catalog" else None
+            if gcat and gcat.get("databases"):
+                L += ["| Base.Tabla | Formato | Ubicación | Columnas | Particiones | Sensibilidad | Datos personales |",
+                      "|---|---|---|---|---|---|---|"]
+                for d in gcat["databases"]:
+                    for t in d.get("tables", []):
+                        pii = [c["name"] for c in t.get("columns", []) + t.get("partition_keys", []) if c.get("pii")]
+                        L.append(f"| {_fmt(d['name'] + '.' + t['name'])} | {_fmt(t.get('format'))} | {_fmt(t.get('location'))} | "
+                                 f"{len(t.get('columns', []))} | {_fmt([p['name'] for p in t.get('partition_keys', [])])} | "
+                                 f"{_fmt(t.get('sensitivity'))} | {_fmt(pii)} |")
+                L.append("")
             notes = n.get("notes") or []
             if notes:
                 L.append("**Notas:**")

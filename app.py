@@ -26,6 +26,7 @@ sys.path.insert(0, BASE)
 
 import ai  # noqa: E402
 import compare as comparer  # noqa: E402
+import glue_catalog  # noqa: E402
 import icons  # noqa: E402
 from catalog import catalog  # noqa: E402
 from copilot import analyze  # noqa: E402
@@ -178,6 +179,12 @@ class Handler(BaseHTTPRequestHandler):
         p.pop("id", None)
         self.send_json(STORE.create(b.get("name") or f"{p.get('name')} (copia)", p), 201)
 
+    def api_glue_import(self):
+        b = self.body()
+        parsed = glue_catalog.parse_import(b.get("text") or "", b.get("filename") or "")
+        merged = parsed if b.get("replace") else glue_catalog.merge(b.get("existing") or {}, parsed)
+        self.send_json({"catalog": merged, "imported": glue_catalog.stats(parsed), "stats": glue_catalog.stats(merged)})
+
     def api_compare(self, a, b):
         self.send_json(comparer.compare(STORE.get(a), STORE.get(b)))
 
@@ -239,6 +246,7 @@ ROUTES = [
     ("POST", r"/api/projects", Handler.api_create),
     ("POST", r"/api/import", Handler.api_import),
     ("POST", r"/api/analyze", Handler.api_analyze),
+    ("POST", r"/api/glue/import", Handler.api_glue_import),
     ("GET", r"/api/icons", Handler.api_icons),
     ("POST", r"/api/icons/setup", Handler.api_icons_setup),
     ("GET", r"/api/ai/status", Handler.api_ai_status),

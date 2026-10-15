@@ -45,7 +45,7 @@ CONTROLS = [
     ("IAM-WILDCARD", "identity", "Sin comodines en acciones sensibles ni PassRole abierto", [],
      ("iam_role",), ["POL-SERVICE-WILDCARD", "POL-PASSROLE", "POL-NOTACTION", "POL-INVALID"]),
     ("IAM-RESOURCE-POL", "identity", "Políticas de recurso sin Principal '*' ni cuentas desconocidas", [],
-     ("s3", "kms", "vpce"), ["POL-PUBLIC-PRINCIPAL", "POL-EXTERNAL-ACCOUNT"]),
+     ("s3", "kms", "vpce", "glue_catalog"), ["POL-PUBLIC-PRINCIPAL", "POL-EXTERNAL-ACCOUNT"]),
     ("IAM-WORKLOAD", "identity", "Cada carga con su propio rol y trust policy correcta", [],
      ("lambda", "ecs", "eks", "emr", "glue", "batch", "iam_role"), ["EKS-NODE-ROLE", "IAM-TRUST-MISMATCH"]),
     ("IAM-EXTERNAL", "identity", "Terceros y pipelines entran con roles (ExternalId / OIDC), sin llaves", [],
@@ -99,6 +99,8 @@ CONTROLS = [
      ("secrets", "rds", "aurora", "lambda", "ext_storage"), ["SM-ROT", "DB-SECRET", "LAMBDA-SECRET-ENV", "EXT-STORAGE-SECRET"]),
     ("DAT-BACKUP", "data", "Backups y recuperación", ["FSBP DynamoDB.2"],
      ("rds", "aurora", "dynamodb", "s3", "backup"), ["DB-BACKUP", "DDB-PITR", "S3-VERSIONING", "BKP-NONE"]),
+    ("DAT-CATALOG", "data", "Catálogo de datos cifrado, clasificado y con datos personales gobernados", [],
+     ("glue_catalog",), ["GLUE-CAT-ENC", "GLUE-PII-NO-LF", "GLUE-SENSITIVITY"]),
     ("DAT-DISCOVERY", "data", "Descubrimiento de datos sensibles (Macie)", [], "account", ["ACC-MACIE"]),
 
     ("APP-AUTH", "app", "APIs y usuarios autenticados (con MFA)", [], ("apigw", "cognito"), ["APIGW-AUTH", "COG-MFA"]),
@@ -356,7 +358,7 @@ class SecurityChecks:
     # ───────────── políticas escritas a mano ─────────────
     def check_policies(self):
         known = self.known_accounts()
-        sources = [("iam_role", "inline", "identity"), ("s3", "bucket_policy", "resource"),
+        sources = [("iam_role", "inline", "identity"), ("s3", "bucket_policy", "resource"), ("glue_catalog", "resource_policy", "resource"),
                    ("kms", "key_policy", "resource"), ("vpce", "policy", "resource")]
         for typ, field, kind in sources:
             for n in self.of_type(typ):

@@ -26,20 +26,15 @@ Abre http://127.0.0.1:8765. La primera vez se crea un proyecto de ejemplo (app d
 
 ### Iconos oficiales de AWS
 
-Para ver cada servicio con su icono oficial (AWS Architecture Icons), descárgalos una vez:
+El repositorio incluye los iconos oficiales de [AWS Architecture Icons](https://aws.amazon.com/architecture/icons/)
+que usa la app (`static/icons/aws/`, paquete del 31-jul-2026). AWS permite usarlos para crear diagramas de
+arquitectura. Para actualizarlos cuando AWS publique un paquete nuevo:
 
 ```bash
 python3 app.py --setup-icons
 ```
 
-También puedes usar el botón **Descargar iconos** de la paleta. Se descarga el paquete oficial de
-[aws.amazon.com/architecture/icons](https://aws.amazon.com/architecture/icons/) (~14 MB) y se extraen sólo los
-iconos que usa la app en `static/icons/aws/`. No se incluyen en el repositorio: AWS permite usarlos para crear
-diagramas de arquitectura. Sin conexión a internet (o detrás de un proxy), descarga el ZIP a mano y usa
-`python3 app.py --icons-zip Icon-package.zip`. Sin iconos, la app muestra abreviaturas de color.
-
-Opciones: `--port 9000`, `--data /ruta/a/mis-datos`, `--host 0.0.0.0` (para que tu arquitecto lo abra
-desde la red local; **no tiene autenticación**, úsalo sólo en redes de confianza).
+Sin conexión o detrás de un proxy, descarga el ZIP a mano y usa `python3 app.py --icons-zip Icon-package.zip`.
 
 ## Cómo se usa
 
@@ -110,6 +105,14 @@ Las reglas viven en `copilot.py` y se ejecutan localmente cada vez que cambias a
 - **Nombres legibles**: el nombre se parte en dos líneas, los nodos se pueden redimensionar y el nombre completo aparece
   al pasar el mouse.
 - **Endpoint en varias subnets**: conecta el VPC endpoint con cada subnet adicional (se dibuja como "desplegado en").
+- **Glue Data Catalog**: componente con pestaña *Catálogo* para subir la salida de `aws glue get-databases` y
+  `aws glue get-tables --database-name <base>` (varios archivos a la vez) o un CSV
+  (`database, table, column, type, partition, comment, format, location, pii, description, owner`). Muestra y permite
+  editar bases, tablas, columnas, particiones, formato (Iceberg/Delta/Hudi/Hive), ubicación, dueño, sensibilidad,
+  retención y columnas con datos personales (se detectan por nombre: RFC, CURP, email, teléfono…). Genera el Terraform
+  (`aws_glue_catalog_database` / `aws_glue_catalog_table`), los permisos IAM por base de datos y reglas: catálogo sin
+  cifrar, datos personales sin Lake Formation o sin clasificar, tablas sin dueño/descripción, tablas de texto sin
+  particiones y buckets que no están en el diagrama.
 - **Tags de gobierno**: tags obligatorios y tags por defecto en el proyecto, en la cuenta o en cada componente; el
   Copilot avisa qué falta y genera el bloque `default_tags` de Terraform (pestaña *Tags y Terraform*).
 - **Ambientes**: *Proyecto → Duplicar como otro ambiente* cambia los IDs de cuenta (p. ej. PRE/PRO) y deja la línea base

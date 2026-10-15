@@ -680,6 +680,22 @@ class Analyzer(SecurityChecks, ExtensionChecks):
                 S("RunGlueJob", ["glue:StartJobRun", "glue:GetJobRun", "glue:GetJobRuns", "glue:BatchStopJobRun"], [self.arn(tgt)])
             S("GlueCatalogRead", ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables",
                                   "glue:GetPartitions"], self.glue_catalog_arns(c.get("database") or "*"))
+        elif t == "glue_catalog":
+            dbs = [d["name"] for d in (c.get("catalog") or {}).get("databases", [])] or ["*"]
+            r_, a_ = self.region, self.acct_id(tgt)
+            res = [f"arn:aws:glue:{r_}:{a_}:catalog"]
+            for db in dbs:
+                res += [f"arn:aws:glue:{r_}:{a_}:database/{db}", f"arn:aws:glue:{r_}:{a_}:table/{db}/*"]
+            acts = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition",
+                    "glue:GetPartitions", "glue:BatchGetPartition", "glue:SearchTables"]
+            if wr:
+                acts += ["glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable", "glue:CreatePartition",
+                         "glue:BatchCreatePartition", "glue:UpdatePartition", "glue:BatchUpdatePartition", "glue:DeletePartition"]
+            S("GlueDataCatalog", acts, res)
+            if str(c.get("governance", "")).startswith("Lake Formation"):
+                S("LakeFormationData", ["lakeformation:GetDataAccess"], ["*"])
+                notes.append("El catálogo está gobernado por Lake Formation: otorga al rol permisos LF (DESCRIBE/SELECT"
+                             + ("/ALTER/INSERT" if wr else "") + ") o asócialo a LF-Tags.")
         elif t == "athena":
             S("AthenaQuery", ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults",
                               "athena:StopQueryExecution", "athena:GetWorkGroup"], [self.arn(tgt)])
@@ -2169,6 +2185,7 @@ class Analyzer(SecurityChecks, ExtensionChecks):
         self.check_security_pack()
         self.check_enduser()
         self.check_externals()
+        self.check_glue_catalogs()
         self.check_tags()
         pending = self.check_tracking()
         roles = self.consolidate_roles(plans)
@@ -2200,6 +2217,7 @@ class Analyzer(SecurityChecks, ExtensionChecks):
             "findings": uniq, "plans": plans, "roles": roles, "security_groups": sgs,
             "sg_suggestions": sg_suggestions, "summary": self.summary(pending), "posture": posture,
             "tags": self.tags_terraform(),
+            "glue_catalogs": self.glue_catalog_outputs(),
             "node_severity": node_sev, "parents": self.parent,
         }
 
