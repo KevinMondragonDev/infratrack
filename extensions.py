@@ -193,36 +193,49 @@ class ExtensionChecks:
     def check_glue_catalogs(self):
         buckets = {str(self.cfg(b).get("bucket_name") or self.name(b)).lower() for b in self.of_type("s3")}
         for n in self.of_type("glue_catalog"):
-            c, L = self.cfg(n), self.label(n)
-            tables = [(d["name"], t) for d in (c.get("catalog") or {}).get("databases", []) for t in d.get("tables", [])]
+            c = self.cfg(n)
+            tables = [(f"{d['name']}.{t['name']}", t) for d in (c.get("catalog") or {}).get("databases", [])
+                      for t in d.get("tables", [])]
             if tri_state(c.get("encryption")) == TRI_NO:
-                self.add("medium", "Seguridad", "GLUE-CAT-ENC", f"Metadatos del catálogo '{L}' sin cifrar", "",
+                self.add("medium", "Seguridad", "GLUE-CAT-ENC", f"Metadatos del catálogo '{self.label(n)}' sin cifrar", "",
                          "Activa el cifrado de metadatos del Data Catalog con una CMK (y el de contraseñas de conexiones).", [n])
-            pii = [f"{db}.{t['name']}" for db, t in tables if any(x.get("pii") for x in t.get("columns", []) + t.get("partition_keys", []))]
-            if pii and c.get("governance", "Sólo IAM") == "Sólo IAM":
-                self.add("medium", "Seguridad", "GLUE-PII-NO-LF", f"{len(pii)} tabla(s) con datos personales sin Lake Formation",
-                         "Tablas: " + ", ".join(pii[:6]) + ("…" if len(pii) > 6 else "") + ". Con sólo IAM no hay permisos por columna.",
-                         "Gobierna el catálogo con Lake Formation (LF-Tags) para filtrar columnas sensibles.", [n])
-            unclassified = [f"{db}.{t['name']}" for db, t in tables if f"{db}.{t['name']}" in pii and not t.get("sensitivity")]
-            if unclassified:
-                self.add("low", "Datos", "GLUE-SENSITIVITY", f"{len(unclassified)} tabla(s) con datos personales sin clasificar",
-                         "Tablas: " + ", ".join(unclassified[:6]) + ("…" if len(unclassified) > 6 else ""),
-                         "Asigna la sensibilidad (Confidencial / Restringida) en la pestaña Catálogo.", [n])
-            undocumented = [f"{db}.{t['name']}" for db, t in tables if not t.get("description") or not t.get("owner")]
-            if undocumented:
-                self.add("low", "Seguimiento", "GLUE-DOC", f"{len(undocumented)} tabla(s) sin descripción o dueño en '{L}'",
-                         "Tablas: " + ", ".join(undocumented[:6]) + ("…" if len(undocumented) > 6 else ""),
-                         "Documenta propósito y dueño de cada tabla para la revisión con el arquitecto.", [n])
-            no_part = [f"{db}.{t['name']}" for db, t in tables
-                       if t.get("format") in ("Hive - CSV", "Hive - JSON") and not t.get("partition_keys")]
-            if no_part:
-                self.add("low", "Costo", "GLUE-NO-PARTITION", f"{len(no_part)} tabla(s) de texto sin particiones",
-                         "Tablas: " + ", ".join(no_part[:6]), "Particiona (fecha) y usa Parquet/Iceberg para reducir el escaneo.", [n])
-            unknown = sorted({m.group(1) for _, t in tables for m in [re.match(r"s3a?://([^/]+)", t.get("location") or "")]
-                              if m and m.group(1).lower() not in buckets})
-            if unknown and self.of_type("s3"):
-                self.add("info", "Seguimiento", "GLUE-LOCATION", f"Buckets del catálogo que no están en el diagrama",
-                         ", ".join(unknown[:8]), "Agrega esos buckets (o pon su nombre real en el campo 'Nombre del bucket').", [n])
+            self._glue_table_rules(n, c, tables)
+            self._glue_unknown_buckets(n, tables, buckets)
+
+    @staticmethod
+    def _table_list(names):
+        return "Tablas: " + ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+
+    def _glue_table_rules(self, n, c, tables):
+        has_pii = lambda t: any(x.get("pii") for x in t.get("columns", []) + t.get("partition_keys", []))  # noqa: E731
+        pii = [k for k, t in tables if has_pii(t)]
+        rules = [
+            (pii and c.get("governance", "Sólo IAM") == "Sólo IAM", pii,
+             ("medium", "Seguridad", "GLUE-PII-NO-LF", "tabla(s) con datos personales sin Lake Formation",
+              "Gobierna el catálogo con Lake Formation (LF-Tags) para filtrar columnas sensibles.")),
+            (True, [k for k, t in tables if has_pii(t) and not t.get("sensitivity")],
+             ("low", "Datos", "GLUE-SENSITIVITY", "tabla(s) con datos personales sin clasificar",
+              "Asigna la sensibilidad (Confidencial / Restringida) en la pestaña Catálogo.")),
+            (True, [k for k, t in tables if not t.get("description") or not t.get("owner")],
+             ("low", "Seguimiento", "GLUE-DOC", f"tabla(s) sin descripción o dueño en '{self.label(n)}'",
+              "Documenta propósito y dueño de cada tabla para la revisión con el arquitecto.")),
+            (True, [k for k, t in tables if t.get("format") in ("Hive - CSV", "Hive - JSON") and not t.get("partition_keys")],
+             ("low", "Costo", "GLUE-NO-PARTITION", "tabla(s) de texto sin particiones",
+              "Particiona (fecha) y usa Parquet/Iceberg para reducir el escaneo.")),
+        ]
+        for cond, names, (sev, cat, rule, title, rec) in rules:
+            if cond and names:
+                self.add(sev, cat, rule, f"{len(names)} {title}", self._table_list(names), rec, [n])
+
+    def _glue_unknown_buckets(self, n, tables, buckets):
+        unknown = set()
+        for _, t in tables:
+            m = re.match(r"s3a?://([^/]+)", t.get("location") or "")
+            if m and m.group(1).lower() not in buckets:
+                unknown.add(m.group(1))
+        if unknown and self.of_type("s3"):
+            self.add("info", "Seguimiento", "GLUE-LOCATION", "Buckets del catálogo que no están en el diagrama",
+                     ", ".join(sorted(unknown)[:8]), "Agrega esos buckets (o pon su nombre real en el campo 'Nombre del bucket').", [n])
 
     def glue_catalog_outputs(self):
         out = {}

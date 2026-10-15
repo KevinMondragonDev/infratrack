@@ -1229,7 +1229,12 @@ function onInspectorFocus(ev) {
 function onInspectorInput(ev) {
   const t = ev.target;
   if (t.id === 'authorInput' || t.id === 'noteAuthor') { S.author = t.value; lsSet('it.author', S.author); return; }
-  if (t.id === 'catFile') { if (ev.type === 'change' && t.files.length) importCatalogFiles(nodeById(S.sel.id), [...t.files]); return; }
+  if (t.id === 'catFile') {
+    if (ev.type === 'change' && t.files.length) {
+      importCatalogFiles(nodeById(S.sel.id), [...t.files]).catch((e) => toast(`No se pudo importar: ${e.message}`, 8000));
+    }
+    return;
+  }
   if (t.id === 'catReplace') return;
   if (t.id === 'catSearch') {
     const q = t.value.trim().toLowerCase();

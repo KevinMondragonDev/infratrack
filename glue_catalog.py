@@ -16,7 +16,8 @@ import io
 import json
 import re
 
-FORMATS = ["Apache Iceberg", "Delta Lake", "Apache Hudi", "Hive - Parquet", "Hive - ORC", "Hive - Avro", "Hive - JSON",
+ICEBERG = "Apache Iceberg"
+FORMATS = [ICEBERG, "Delta Lake", "Apache Hudi", "Hive - Parquet", "Hive - ORC", "Hive - Avro", "Hive - JSON",
            "Hive - CSV", "Hive - otro", "Vista"]
 SENSITIVITY = ["Pública", "Interna", "Confidencial", "Restringida (PII / financiera)"]
 PII_HINT = re.compile(r"(rfc|curp|email|correo|phone|telefono|tel[eé]fono|celular|nombre|name|apellido|address|direcci[oó]n|"
@@ -37,7 +38,7 @@ def detect_format(t):
     if t.get("TableType") == "VIRTUAL_VIEW":
         return "Vista"
     if params.get("table_type") == "iceberg" or "metadata_location" in params:
-        return "Apache Iceberg"
+        return ICEBERG
     if params.get("spark.sql.sources.provider") == "delta" or params.get("table_type") == "delta":
         return "Delta Lake"
     if "hudi" in str(sd.get("InputFormat", "")).lower():
@@ -202,51 +203,76 @@ def _hcl_str(s):
     return json.dumps(str(s or ""), ensure_ascii=False)
 
 
+PARQUET_SERDE = [
+    '    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"',
+    '    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"',
+    "    ser_de_info {",
+    '      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"',
+    "    }",
+]
+
+
+def _tf_database(d, did, catalog_id):
+    lines = [f'resource "aws_glue_catalog_database" "{did}" {{', f'  name        = {_hcl_str(d["name"])}']
+    if d.get("description"):
+        lines.append(f'  description = {_hcl_str(d["description"])}')
+    if d.get("location"):
+        lines.append(f'  location_uri = {_hcl_str(d["location"])}')
+    if catalog_id:
+        lines.append(f'  catalog_id  = {_hcl_str(catalog_id)}')
+    return "\n".join(lines + ["}"]) + "\n"
+
+
+def _tf_column_block(block, c, indent):
+    pad = " " * indent
+    lines = [f"{pad}{block} {{", f"{pad}  name = {_hcl_str(c['name'])}", f"{pad}  type = {_hcl_str(c['type'])}"]
+    if c.get("comment"):
+        lines.append(f"{pad}  comment = {_hcl_str(c['comment'])}")
+    return lines + [f"{pad}}}"]
+
+
+def _tf_parameters(t):
+    params = {k: v for k, v in (t.get("parameters") or {}).items()
+              if k not in ("metadata_location", "previous_metadata_location")}
+    if t.get("classification"):
+        params.setdefault("classification", t["classification"])
+    if t.get("sensitivity"):
+        params["data_sensitivity"] = t["sensitivity"]
+    if not params:
+        return []
+    return ["  parameters = {"] + [f"    {_hcl_str(k)} = {_hcl_str(v)}" for k, v in sorted(params.items())] + ["  }"]
+
+
+def _tf_table(t, db_name, did):
+    iceberg = t.get("format") == ICEBERG
+    tid = _tf_id(db_name + "_" + t["name"])
+    lines = [f'resource "aws_glue_catalog_table" "{tid}" {{',
+             f'  name          = {_hcl_str(t["name"])}',
+             f'  database_name = aws_glue_catalog_database.{did}.name']
+    for key in ("description", "owner"):
+        if t.get(key):
+            lines.append(f"  {key.ljust(13)} = {_hcl_str(t[key])}")
+    lines.append(f'  table_type    = {_hcl_str(t.get("table_type") or "EXTERNAL_TABLE")}')
+    if iceberg:
+        lines += ["  open_table_format_input {", "    iceberg_input {", '      metadata_operation = "CREATE"', "    }", "  }"]
+    else:
+        lines += _tf_parameters(t)
+    for pk in t.get("partition_keys", []):
+        lines += _tf_column_block("partition_keys", pk, 2)
+    lines.append("  storage_descriptor {")
+    if t.get("location"):
+        lines.append(f'    location = {_hcl_str(t["location"])}')
+    if "Parquet" in (t.get("format") or ""):
+        lines += PARQUET_SERDE
+    for c in t.get("columns", []):
+        lines += _tf_column_block("columns", c, 4)
+    return "\n".join(lines + ["  }", "}"]) + "\n"
+
+
 def terraform(cat, catalog_id=None):
     out = []
     for d in (cat or {}).get("databases", []):
         did = _tf_id(d["name"])
-        out.append(f'resource "aws_glue_catalog_database" "{did}" {{\n  name        = {_hcl_str(d["name"])}\n'
-                   + (f'  description = {_hcl_str(d.get("description"))}\n' if d.get("description") else "")
-                   + (f'  location_uri = {_hcl_str(d.get("location"))}\n' if d.get("location") else "")
-                   + (f'  catalog_id  = {_hcl_str(catalog_id)}\n' if catalog_id else "") + "}\n")
-        for t in d.get("tables", []):
-            tid = _tf_id(f'{d["name"]}_{t["name"]}')
-            iceberg = t.get("format") == "Apache Iceberg"
-            lines = [f'resource "aws_glue_catalog_table" "{tid}" {{',
-                     f'  name          = {_hcl_str(t["name"])}',
-                     f'  database_name = aws_glue_catalog_database.{did}.name']
-            if t.get("description"):
-                lines.append(f'  description   = {_hcl_str(t["description"])}')
-            if t.get("owner"):
-                lines.append(f'  owner         = {_hcl_str(t["owner"])}')
-            lines.append(f'  table_type    = {_hcl_str(t.get("table_type") or "EXTERNAL_TABLE")}')
-            params = {k: v for k, v in (t.get("parameters") or {}).items() if k not in ("metadata_location", "previous_metadata_location")}
-            if t.get("classification") and "classification" not in params:
-                params["classification"] = t["classification"]
-            if t.get("sensitivity"):
-                params["data_sensitivity"] = t["sensitivity"]
-            if params and not iceberg:
-                lines.append("  parameters = {")
-                lines += [f"    {_hcl_str(k)} = {_hcl_str(v)}" for k, v in sorted(params.items())]
-                lines.append("  }")
-            if iceberg:
-                lines += ["  open_table_format_input {", "    iceberg_input {", '      metadata_operation = "CREATE"', "    }", "  }"]
-            for pk in t.get("partition_keys", []):
-                lines += ["  partition_keys {", f"    name = {_hcl_str(pk['name'])}", f"    type = {_hcl_str(pk['type'])}",
-                          *( [f"    comment = {_hcl_str(pk['comment'])}"] if pk.get("comment") else []), "  }"]
-            lines.append("  storage_descriptor {")
-            if t.get("location"):
-                lines.append(f'    location = {_hcl_str(t["location"])}')
-            fmt = t.get("format") or ""
-            if "Parquet" in fmt:
-                lines += ['    input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"',
-                          '    output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"',
-                          '    ser_de_info {', '      serialization_library = "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"',
-                          '    }']
-            for c in t.get("columns", []):
-                lines += ["    columns {", f"      name = {_hcl_str(c['name'])}", f"      type = {_hcl_str(c['type'])}",
-                          *([f"      comment = {_hcl_str(c['comment'])}"] if c.get("comment") else []), "    }"]
-            lines += ["  }", "}"]
-            out.append("\n".join(lines) + "\n")
+        out.append(_tf_database(d, did, catalog_id))
+        out += [_tf_table(t, d["name"], did) for t in d.get("tables", [])]
     return "\n".join(out)
