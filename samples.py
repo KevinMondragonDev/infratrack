@@ -18,7 +18,7 @@ def E(id, s, t, access=None, port=None, **kw):
 def sample_project():
     ts = now_iso()
     nodes = [
-        N("vpc1", "vpc", "VPC principal", 320, 40, 760, 600, terraformed=True, status="Aprobado",
+        N("vpc1", "vpc", "VPC principal", 320, 40, 760, 700, terraformed=True, status="Aprobado",
           config={"cidr": "10.20.0.0/16", "region": "us-east-1", "flow_logs": False}),
         N("pubA", "subnet", "Pública A", 340, 130, 340, 150, terraformed=True, status="Aprobado",
           config={"tier": "public", "cidr": "10.20.0.0/24", "az": "a"}),
@@ -47,6 +47,10 @@ def sample_project():
                   "catalog": "AWS Glue Data Catalog"},
           questions=[{"id": "q1", "text": "¿EMR Serverless o EMR on EC2 con Spot para los jobs nocturnos de 3 h?",
                       "author": "equipo", "at": ts, "status": "open", "answer": ""}]),
+        N("sgdb", "sg", "SG base de datos", 352, 650, status="En revisión",
+          config={"group_name": "sg-pedidos-bd", "description": "Acceso a PostgreSQL de pedidos", "allow_all_egress": True,
+                  "rules": [{"direction": "ingress", "protocol": "tcp", "from_port": 5432, "to_port": 5432,
+                             "peer": "sg-pedidos-api-pedidos", "description": "API pedidos"}]}),
         N("users", "users", "Clientes", 60, 200),
         N("sqs", "sqs", "Cola pedidos", 1140, 360, config={"type": "Standard", "visibility": 30, "dlq": True}),
         N("raw", "s3", "Data lake raw", 1140, 120,
@@ -73,6 +77,8 @@ def sample_project():
         E("e9", "athena", "curated", "read"),
         E("e10", "ecs", "secret", "read"),
         E("e11", "raw", "kms", None),
+        E("e12", "lambda", "rds", "network", notes="Actualiza el estado del pedido"),
+        E("e13", "sgdb", "rds"),
     ]
     return {"name": "Ejemplo: app de pedidos + data lake", "description": "Proyecto de ejemplo. Bórralo cuando quieras.",
             "settings": {"region": "us-east-1", "account_id": "123456789012", "environment": "prod", "prefix": "pedidos"},

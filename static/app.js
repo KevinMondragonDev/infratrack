@@ -17,6 +17,8 @@ const SEV_LABEL = { critical: 'Crítico', high: 'Alto', medium: 'Medio', low: 'B
 const STATUSES = ['Borrador', 'En revisión', 'Aprobado', 'Requiere cambios', 'Descartado'];
 const ACCESS = [['read', 'Lectura'], ['write', 'Escritura'], ['readwrite', 'Lectura y escritura'], ['invoke', 'Invocación / llamada'], ['network', 'Tráfico de red (puerto)']];
 const ACCESS_SHORT = { read: 'lee', write: 'escribe', readwrite: 'lee/escribe', invoke: 'invoca', network: 'red' };
+const ASSOC_TYPES = new Set(['sg', 'iam_role']);
+const isAssoc = (e) => { const a = nodeById(e.source), b = nodeById(e.target); return !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type))); };
 const SUBNET_STYLE = {
   public: { stroke: '#3F8624', fill: 'rgba(63,134,36,.07)', name: 'Pública' },
   private: { stroke: '#147EBA', fill: 'rgba(20,126,186,.07)', name: 'Privada' },
@@ -359,11 +361,12 @@ function renderCanvas() {
     const p1 = clipToRect(a, center(b)), p2 = clipToRect(b, center(a));
     const sel = isSel('edge', e.id);
     const marker = sel ? 'arrowSel' : e.terraformed ? 'arrowOk' : 'arrow';
-    const txt = [e.access ? ACCESS_SHORT[e.access] : '¿acceso?', e.port ? ':' + e.port : ''].join('') + (e.label ? ' · ' + e.label : '');
+    const assoc = isAssoc(e);
+    const txt = assoc ? 'asignado' : [e.access ? ACCESS_SHORT[e.access] : '¿acceso?', e.port ? ':' + e.port : ''].join('') + (e.label ? ' · ' + e.label : '');
     const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2, tw = Math.min(220, txt.length * 6 + 12);
     out += `<g class="edge ${sel ? 'sel' : ''} ${edgeSev.has(e.id) ? 'sev-edge' : ''}" data-edge="${e.id}">
       <line class="hit" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}"/>
-      <line class="line ${e.access ? '' : 'undef'} ${e.terraformed ? 'ok' : ''}" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" marker-end="url(#${marker})"/>
+      <line class="line ${assoc ? 'assoc' : e.access ? '' : 'undef'} ${e.terraformed ? 'ok' : ''}" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" marker-end="url(#${marker})"/>
       <g class="elabel" transform="translate(${mx},${my})"><rect x="${-tw / 2}" y="-9" width="${tw}" height="17" rx="8"/>
       <text y="3.5">${esc(trunc(txt, 36))}</text></g></g>`;
   }
@@ -494,12 +497,13 @@ function onPointerUp(ev) {
       P().edges.push(e);
       select('edge', e.id);
       changed();
-      toast('Conexión creada: revisa los permisos que necesita en el panel derecho');
+      toast(isAssoc(e) ? 'Asignación creada' : 'Conexión creada: revisa los permisos que necesita en el panel derecho');
     } else renderCanvas();
   }
 }
 
 function guessAccess(a, b) {
+  if (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type)) return null;
   if (['users', 'onprem', 'alb', 'nlb', 'cloudfront'].includes(a.type)) return 'network';
   if (['rds', 'aurora', 'elasticache', 'documentdb', 'efs', 'redshift', 'msk', 'ec2', 'asg', 'ecs', 'eks'].includes(b.type)) return 'network';
   if (['lambda', 'stepfn', 'glue', 'emr', 'apigw', 'athena'].includes(b.type)) return 'invoke';
@@ -572,6 +576,8 @@ function fieldHtml(f, val, attr) {
   } else if (f.type === 'multiselect') {
     const vs = Array.isArray(val) ? val : [];
     inner = `<div class="ms">${f.options.map((o) => `<label class="${vs.includes(o) ? 'on' : ''}"><input type="checkbox" data-ms="${esc(f.key)}" value="${esc(o)}" ${vs.includes(o) ? 'checked' : ''}>${esc(o)}</label>`).join('')}</div>`;
+  } else if (f.type === 'rules') {
+    inner = rulesTableHtml(f, Array.isArray(val) ? val : []);
   } else if (f.type === 'textarea') {
     inner = `<textarea ${attr} ${ph}>${esc(val)}</textarea>`;
   } else if (f.type === 'number') {
@@ -580,6 +586,37 @@ function fieldHtml(f, val, attr) {
     inner = `<input type="text" spellcheck="false" ${attr} value="${esc(val)}" ${ph}>`;
   }
   return `<div class="field ${missing}"><label>${esc(f.label)}${req}</label>${inner}${help}</div>`;
+}
+
+function rulesTableHtml(f, rows) {
+  // Cada fila: línea 1 con selects/números (con encabezado), línea 2 con los campos de texto.
+  const isPort = (c) => c.key.endsWith('port');
+  const short = f.columns.filter((c) => c.type !== 'text' && !isPort(c));
+  const long = f.columns.filter((c) => c.type === 'text' || isPort(c));
+  const grid = `grid-template-columns:${short.map((c) => (c.key === 'rule_no' ? '52px' : '1fr')).join(' ')} 26px`;
+  const grid2 = `grid-template-columns:${long.map((c) => (isPort(c) ? '62px' : '1fr')).join(' ')}`;
+  const cell = (c, v, i) => {
+    const a = `data-rcell="${esc(f.key)}" data-row="${i}" data-col="${esc(c.key)}" data-ctype="${c.type}" title="${esc(c.label)}"`;
+    if (c.type === 'select') return `<select ${a}><option value=""></option>${c.options.map((o) => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    if (c.type === 'number') return `<input type="number" ${a} value="${v ?? ''}" placeholder="${isPort(c) ? c.label.toLowerCase() : ''}">`;
+    return `<input type="text" spellcheck="false" ${a} value="${esc(v)}" placeholder="${esc(c.label + (c.placeholder ? ': ' + c.placeholder : ''))}">`;
+  };
+  return `<div class="rules">
+    <div class="rhead" style="${grid}">${short.map((c) => `<span>${esc(c.label)}</span>`).join('')}<span></span></div>
+    ${rows.map((r, i) => `<div class="rrow">
+      <div class="rline" style="${grid}">${short.map((c) => cell(c, r[c.key], i)).join('')}
+        <button class="btn sm ghost" data-delrow="${esc(f.key)}" data-row="${i}" title="Quitar">✕</button></div>
+      ${long.length ? `<div class="rline long" style="${grid2}">${long.map((c) => cell(c, r[c.key], i)).join('')}</div>` : ''}
+    </div>`).join('') || '<div class="muted" style="padding:6px">Sin filas.</div>'}
+  </div><button class="btn sm" data-addrow="${esc(f.key)}" style="margin-top:6px">+ Agregar fila</button>`;
+}
+
+function sgSuggestionsHtml(n) {
+  const sug = S.analysis && S.analysis.sg_suggestions && S.analysis.sg_suggestions[n.id];
+  if (!sug || !sug.length) return '';
+  return `<div class="finding sev-medium"><h4>El Copilot sugiere ${sug.length} regla(s) para este SG</h4>
+    <ul style="margin:4px 0 6px 16px;padding:0">${sug.map((r) => `<li><code>${esc(r.direction)} ${esc(r.protocol)}/${esc(r.from_port ?? 'todos')} ${r.direction === 'ingress' ? 'desde' : 'hacia'} ${esc(r.peer)}</code> <span class="muted">${esc(r.description)}</span></li>`).join('')}</ul>
+    <button class="btn blue sm" data-act="applySg">Agregar reglas sugeridas</button></div>`;
 }
 
 function findingHtml(f, { links = true } = {}) {
@@ -664,6 +701,7 @@ function renderNodeInspector(el, n) {
     body.innerHTML = `
       <div class="muted">Campos requeridos completos: ${prog.done}/${prog.total}</div>
       <div class="meter"><div style="width:${prog.pct}%"></div></div>
+      ${n.type === 'sg' ? `<div id="sgSug">${sgSuggestionsHtml(n)}</div>` : ''}
       ${fields.length ? fields.map((f) => fieldHtml(f, cfg[f.key], `data-cfg="${esc(f.key)}" data-ftype="${f.type}"`)).join('') : '<p class="muted">Este componente no tiene configuración específica.</p>'}
       ${fieldHtml({ label: 'Otras configuraciones / parámetros', type: 'textarea', placeholder: 'Cualquier otro ajuste relevante para revisar con el arquitecto' }, cfg._extra, 'data-cfg="_extra" data-ftype="textarea"')}`;
   } else if (S.tab === 'notes') {
@@ -712,6 +750,7 @@ function renderEdgeInspector(el, e) {
         <span class="big">${e.terraformed ? '✓' : ''}</span>
         <div><b>${e.terraformed ? 'Permisos y reglas terraformados' : 'Permisos/reglas pendientes'}</b>
         <small>Políticas IAM, Security Groups y rutas de esta conexión</small></div></div>
+      ${isAssoc(e) ? `<p class="muted">Esta conexión <b>asigna</b> ${esc(labelOf(ASSOC_TYPES.has(a.type) ? a : b))} a ${esc(labelOf(ASSOC_TYPES.has(a.type) ? b : a))}; no transporta tráfico.</p>` : `
       <div class="field ${e.access ? '' : 'missing'}"><label>¿Qué hace ${esc(labelOf(a))} con ${esc(labelOf(b))}? <span class="req">*</span></label>
         <select data-ebind="access"><option value="">— Define el tipo de acceso —</option>
         ${ACCESS.map(([k, l]) => `<option value="${k}" ${e.access === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -719,7 +758,7 @@ function renderEdgeInspector(el, e) {
       <div class="row2">
         ${fieldHtml({ label: 'Puerto', type: 'number', placeholder: 'auto' }, e.port, 'data-ebind="port" data-ftype="number"')}
         ${fieldHtml({ label: 'Protocolo', type: 'select', options: ['tcp', 'udp'] }, e.protocol || 'tcp', 'data-ebind="protocol"')}
-      </div>
+      </div>`}
       ${fieldHtml({ label: 'Etiqueta', type: 'text', placeholder: 'ej. eventos de pedidos' }, e.label, 'data-ebind="label"')}
       ${fieldHtml({ label: 'Notas', type: 'textarea', placeholder: 'Detalles del flujo, volumen, formato…' }, e.notes, 'data-ebind="notes"')}
       <div class="section-title">Lo que necesitas para esta conexión</div>
@@ -782,6 +821,8 @@ function refreshInspectorAnalysis() {
         <span class="muted"> · ${e.access ? ACCESS_SHORT[e.access] : 'acceso sin definir'}${e.port ? ':' + e.port : ''}</span>${e.terraformed ? ' <span style="color:var(--ok)">✓</span>' : ''}</div>`;
     }).join('') : '<p class="muted">Sin conexiones. Arrastra desde el punto azul del borde derecho hacia otro componente.</p>';
   }
+  const sgBox = $('#sgSug');
+  if (sgBox) sgBox.innerHTML = sgSuggestionsHtml(n);
   const cp = $('#insCopilot');
   if (cp) {
     if (!A) { cp.innerHTML = '<p class="muted">Analizando…</p>'; return; }
@@ -789,6 +830,7 @@ function refreshInspectorAnalysis() {
     const role = A.roles.find((r) => r.node_id === n.id);
     const sgs = A.security_groups.filter((g) => [...g.ingress, ...g.egress].length && g.sg === `sg-${roleSlug(n)}`);
     cp.innerHTML = `
+      ${n.type === 'sg' ? sgSuggestionsHtml(n) : ''}
       ${fs.length ? fs.map((f) => findingHtml(f)).join('') : '<p>✅ Sin hallazgos para este componente.</p>'}
       ${role ? `<div class="section-title">Política IAM consolidada (${esc(role.role)})</div>${codeBlock(JSON.stringify(role.policy, null, 2))}
         <details class="tf"><summary>Terraform del rol</summary>${codeBlock(role.terraform)}</details>` : ''}
@@ -865,7 +907,7 @@ function readInput(t) {
 }
 function onInspectorFocus(ev) {
   const t = ev.target;
-  if (t.matches('[data-bind],[data-cfg],[data-ebind],[data-pbind],[data-sbind],[data-qanswer]') && S.focusEl !== t) { S.focusEl = t; snapshot(); }
+  if (t.matches('[data-bind],[data-cfg],[data-ebind],[data-pbind],[data-sbind],[data-qanswer],[data-rcell]') && S.focusEl !== t) { S.focusEl = t; snapshot(); }
 }
 function onInspectorInput(ev) {
   const t = ev.target;
@@ -882,6 +924,14 @@ function onInspectorInput(ev) {
     const n = nodeById(S.sel.id); n.config = n.config || {};
     setPath(n.config, t.dataset.cfg, readInput(t));
     rerender = isChange && (t.type === 'checkbox' || t.tagName === 'SELECT');
+  } else if (t.dataset.rcell) {
+    const n = nodeById(S.sel.id); n.config = n.config || {};
+    const rows = n.config[t.dataset.rcell] = n.config[t.dataset.rcell] || [];
+    const row = rows[Number(t.dataset.row)];
+    if (!row) return;
+    let v = t.value;
+    if (t.dataset.ctype === 'number') v = v === '' ? null : Number(v);
+    if (v === '' || v === null) delete row[t.dataset.col]; else row[t.dataset.col] = v;
   } else if (t.dataset.ms) {
     const n = nodeById(S.sel.id); n.config = n.config || {};
     const set = new Set(n.config[t.dataset.ms] || []);
@@ -917,6 +967,25 @@ function onInspectorClick(ev) {
   if (t.dataset.dismiss) { dismissFinding(t.dataset.dismiss); return; }
   if (t.dataset.undismiss) { undismissFinding(t.dataset.undismiss); return; }
   if (t.dataset.aifocus) { askAI(null, t.dataset.aifocus, $('#aiNodeOut')); return; }
+  if (t.dataset.addrow) {
+    const f = compOf(n).fields.find((x) => x.key === t.dataset.addrow);
+    snapshot(); n.config = n.config || {};
+    const rows = n.config[f.key] = n.config[f.key] || [];
+    const row = {};
+    f.columns.forEach((c) => {
+      if (c.key === 'rule_no') row.rule_no = (Math.max(0, ...rows.map((r) => Number(r.rule_no) || 0)) || 90) + 10;
+      else if (c.key === 'direction') row.direction = 'ingress';
+      else if (c.key === 'protocol') row.protocol = 'tcp';
+      else if (c.key === 'action') row.action = 'allow';
+      else if (c.key === 'target_type') row.target_type = 'nat';
+    });
+    rows.push(row);
+    const sc = $('#inspector').scrollTop; changed({ inspector: true }); $('#inspector').scrollTop = sc; return;
+  }
+  if (t.dataset.delrow) {
+    snapshot(); n.config[t.dataset.delrow].splice(Number(t.dataset.row), 1);
+    const sc = $('#inspector').scrollTop; changed({ inspector: true }); $('#inspector').scrollTop = sc; return;
+  }
   if (t.dataset.delnote) { snapshot(); n.notes = n.notes.filter((x) => x.id !== t.dataset.delnote); changed({ inspector: true }); return; }
   if (t.dataset.delq) { if (!confirm('¿Eliminar la pregunta?')) return; snapshot(); n.questions = n.questions.filter((x) => x.id !== t.dataset.delq); changed({ inspector: true }); return; }
   if (t.dataset.qtoggle) {
@@ -930,6 +999,12 @@ function onInspectorClick(ev) {
       else if (e) { snapshot(); e.terraformed = !e.terraformed; changed({ inspector: true }); }
       break;
     case 'del': deleteSelection(); break;
+    case 'applySg': {
+      const sug = (S.analysis && S.analysis.sg_suggestions && S.analysis.sg_suggestions[n.id]) || [];
+      if (!sug.length) return;
+      snapshot(); n.config.rules = [...(n.config.rules || []), ...sug.map((r) => ({ ...r }))];
+      S.tab = 'config'; changed({ inspector: true }); toast(`${sug.length} regla(s) agregadas al SG`); break;
+    }
     case 'dup': if (n) duplicateNode(n); break;
     case 'flip': snapshot(); [e.source, e.target] = [e.target, e.source]; changed({ inspector: true }); break;
     case 'addNote': {

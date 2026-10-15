@@ -62,7 +62,18 @@ Las reglas viven en `copilot.py` y se ejecutan localmente cada vez que cambias a
   el destino está cifrado, Glue Data Catalog/S3 Tables para Iceberg, `iam:PassRole` para lanzar jobs,
   políticas de recurso (permiso de Lambda, queue/topic policy, bucket policy OAC) y trust policies.
 - **Firewall / Security Groups**: reglas de entrada y salida referenciando SG, prefix lists (S3, CloudFront)
-  o CIDR; WAF en entradas públicas; filtrado de egress.
+  o CIDR; WAF en entradas públicas; filtrado de egress. Si dibujas un **Security Group** y lo conectas a sus
+  recursos, compara sus reglas con las que exigen las conexiones (botón *Agregar reglas sugeridas*) y marca
+  reglas peligrosas (SSH/RDP o puertos de base de datos abiertos a internet, todo el tráfico abierto).
+- **Network ACL** (dentro de una subnet): evalúa las reglas en orden como lo hace AWS, incluido el *deny*
+  implícito, y avisa cuando bloquean una conexión o sus respuestas (puertos efímeros 1024-65535).
+- **Tablas de rutas** (dentro de una subnet, o en la VPC como tabla principal): subnet pública sin
+  0.0.0.0/0 → IGW, privada con ruta al IGW, rutas a NAT/TGW/peering que no existen, Gateway endpoints no
+  asociados a la tabla y rutas faltantes entre VPCs. Cuando hay tabla de rutas, la salida a internet o a
+  servicios se calcula con sus rutas reales.
+- **Otros servicios**: AWS Batch (Spot sin reintentos, timeouts), App Runner (VPC connector), Elastic
+  Beanstalk (política de despliegue, single instance), Amazon MQ (público, single-instance, modo inválido),
+  Global Accelerator (endpoints soportados), Shield, Direct Connect (redundancia y VPN de respaldo) y VPN.
 - **Datos**: retención y lifecycle, versionado, Iceberg sin catálogo/compactación/expiración de snapshots,
   EMR leyendo Iceberg sin habilitarlo, formatos columnares, PITR, backups.
 - **Costo y operación**: EMR sin auto-terminación o sin límite de capacidad, Spot en task nodes,

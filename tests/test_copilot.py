@@ -110,5 +110,98 @@ class NetworkRulesTest(unittest.TestCase):
         self.assertTrue(f["dismissed"])
 
 
+
+class NetworkControlsTest(unittest.TestCase):
+    def vpc(self):
+        return [
+            N("vpc", "vpc", 0, 0, 1000, 700, cidr="10.0.0.0/16"),
+            N("pub", "subnet", 20, 50, 450, 250, tier="public", cidr="10.0.0.0/24", az="a"),
+            N("app", "subnet", 20, 350, 450, 300, tier="private", cidr="10.0.1.0/24", az="a"),
+            N("data", "subnet", 500, 350, 450, 300, tier="private", cidr="10.0.2.0/24", az="b"),
+            N("igw", "igw", 480, 10, 100, 40), N("nat", "nat", 40, 100),
+            N("fn", "lambda", 40, 400), N("db", "rds", 520, 400, engine="PostgreSQL"),
+        ]
+
+    def test_sg_missing_and_open_rules(self):
+        nodes = self.vpc() + [N("sg", "sg", 520, 600, group_name="sg-db", rules=[
+            {"direction": "ingress", "protocol": "tcp", "from_port": 22, "to_port": 22, "peer": "0.0.0.0/0"}])]
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "db", "network"), E("s", "sg", "db")]})
+        r = rules(a)
+        self.assertIn("SG-OPEN-ADMIN", r)
+        self.assertIn("SG-MISSING-RULES", r)
+        sug = a["sg_suggestions"]["sg"][0]
+        self.assertEqual((sug["direction"], sug["from_port"], sug["peer"]), ("ingress", 5432, "sg-fn"))
+        # La regla del Copilot usa el nombre del SG real
+        self.assertEqual(a["plans"]["e"]["network"][0]["sg"], "sg-db")
+
+    def test_sg_rule_by_cidr_covers_requirement(self):
+        nodes = self.vpc() + [N("sg", "sg", 520, 600, group_name="sg-db", rules=[
+            {"direction": "ingress", "protocol": "tcp", "from_port": 5432, "to_port": 5432, "peer": "10.0.0.0/16"}])]
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "db", "network"), E("s", "sg", "db")]})
+        self.assertNotIn("SG-MISSING-RULES", rules(a))
+
+    def test_nacl_needs_ephemeral_ports(self):
+        nacl = N("acl", "nacl", 750, 400, rules=[
+            {"rule_no": 100, "direction": "ingress", "action": "allow", "protocol": "tcp",
+             "from_port": 5432, "to_port": 5432, "cidr": "10.0.1.0/24"}])
+        a = analyze({"nodes": self.vpc() + [nacl], "edges": [E("e", "fn", "db", "network")]})
+        self.assertIn("NACL-BLOCK", rules(a))
+        nacl["config"]["rules"].append({"rule_no": 100, "direction": "egress", "action": "allow", "protocol": "tcp",
+                                        "from_port": 1024, "to_port": 65535, "cidr": "10.0.1.0/24"})
+        a = analyze({"nodes": self.vpc() + [nacl], "edges": [E("e", "fn", "db", "network")]})
+        self.assertNotIn("NACL-BLOCK", rules(a))
+
+    def test_nacl_deny_before_allow(self):
+        nacl = N("acl", "nacl", 750, 400, rules=[
+            {"rule_no": 90, "direction": "ingress", "action": "deny", "protocol": "all", "cidr": "10.0.1.0/24"},
+            {"rule_no": 100, "direction": "ingress", "action": "allow", "protocol": "all", "cidr": "0.0.0.0/0"},
+            {"rule_no": 100, "direction": "egress", "action": "allow", "protocol": "all", "cidr": "0.0.0.0/0"}])
+        a = analyze({"nodes": self.vpc() + [nacl], "edges": [E("e", "fn", "db", "network")]})
+        self.assertIn("NACL-BLOCK", rules(a))
+
+    def test_route_tables(self):
+        nodes = self.vpc() + [
+            N("rpub", "rtb", 250, 100, routes=[]),
+            N("rapp", "rtb", 250, 400, routes=[{"destination": "0.0.0.0/0", "target_type": "igw"}]),
+            N("b", "s3", 1200, 100)]
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b", "read")]})
+        r = rules(a)
+        self.assertIn("RTB-PUBLIC-NO-IGW", r)
+        self.assertIn("RTB-PRIVATE-IGW", r)
+        self.assertIn("NET-PUBLIC-NO-IP", r)
+
+    def test_gateway_endpoint_without_route(self):
+        nodes = self.vpc() + [
+            N("rapp", "rtb", 250, 400, routes=[{"destination": "0.0.0.0/0", "target_type": "nat"}]),
+            N("ep", "vpce", 300, 500, endpoint_type="Gateway", services=["s3"]), N("b", "s3", 1200, 100)]
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b", "read")]})
+        self.assertIn("RTB-GW-ASSOC", rules(a))
+        nodes[-3]["config"]["routes"].append({"destination": "pl-s3", "target_type": "vpce"})
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b", "read")]})
+        self.assertNotIn("RTB-GW-ASSOC", rules(a))
+        self.assertTrue(any("VPC endpoint" in x for x in a["plans"]["e"]["path"]))
+
+
+class NewServicesTest(unittest.TestCase):
+    def test_new_services(self):
+        nodes = [
+            N("vpc", "vpc", 0, 0, 900, 600, cidr="10.0.0.0/16"),
+            N("priv", "subnet", 20, 50, 400, 500, tier="private", cidr="10.0.1.0/24", az="a"),
+            N("db", "rds", 40, 100, engine="MySQL"), N("ar", "apprunner", 1000, 100),
+            N("mq", "mq", 40, 250, engine="RabbitMQ", deployment="Single-instance", public=True),
+            N("dx", "dx", 1000, 400, redundancy="Una conexión (sin SLA)"),
+            N("eb", "beanstalk", 220, 100, deploy_policy="All at once", env_type="Single instance"),
+            N("bt", "batch", 220, 250, compute="Fargate Spot"), N("ga", "globalaccel", -300, 100),
+        ]
+        a = analyze({"settings": {"environment": "prod"}, "nodes": nodes,
+                     "edges": [E("e1", "ar", "db", "network"), E("e2", "ga", "db")]})
+        r = rules(a)
+        for rule in ("NET-APPRUNNER-CONNECTOR", "SEC-DATA-PUBLIC", "MQ-SINGLE", "DX-SINGLE", "EB-DEPLOY", "EB-SINGLE",
+                     "BATCH-SPOT-RETRY", "GA-ENDPOINT"):
+            self.assertIn(rule, r)
+        self.assertEqual(analyze({"nodes": [N("x", "lambda", 0, 0), N("b", "batch", 300, 0)],
+                                  "edges": [E("e", "x", "b", "invoke")]})["plans"]["e"]["identity"][0]["Action"][-1],
+                         "batch:TerminateJob")
+
 if __name__ == "__main__":
     unittest.main()
