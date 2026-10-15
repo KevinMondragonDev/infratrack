@@ -24,6 +24,20 @@ python3 app.py --open
 
 Abre http://127.0.0.1:8765. La primera vez se crea un proyecto de ejemplo (app de pedidos + data lake).
 
+### Iconos oficiales de AWS
+
+Para ver cada servicio con su icono oficial (AWS Architecture Icons), descárgalos una vez:
+
+```bash
+python3 app.py --setup-icons
+```
+
+También puedes usar el botón **Descargar iconos** de la paleta. Se descarga el paquete oficial de
+[aws.amazon.com/architecture/icons](https://aws.amazon.com/architecture/icons/) (~14 MB) y se extraen sólo los
+iconos que usa la app en `static/icons/aws/`. No se incluyen en el repositorio: AWS permite usarlos para crear
+diagramas de arquitectura. Sin conexión a internet (o detrás de un proxy), descarga el ZIP a mano y usa
+`python3 app.py --icons-zip Icon-package.zip`. Sin iconos, la app muestra abreviaturas de color.
+
 Opciones: `--port 9000`, `--data /ruta/a/mis-datos`, `--host 0.0.0.0` (para que tu arquitecto lo abra
 desde la red local; **no tiene autenticación**, úsalo sólo en redes de confianza).
 

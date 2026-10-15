@@ -20,6 +20,7 @@ const ACCESS_SHORT = { read: 'lee', write: 'escribe', readwrite: 'lee/escribe', 
 const ASSOC_TYPES = new Set(['sg', 'iam_role']);
 const isAssoc = (e) => { const a = nodeById(e.source), b = nodeById(e.target); return !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type))); };
 const ENV_COLOR = { prod: '#D13212', staging: '#0972D3', qa: '#0972D3', dev: '#0972D3', sandbox: '#7D8998' };
+const CONTAINER_PREFIX = { vpc: 'VPC · ', account: 'Cuenta · ' };
 const SUBNET_STYLE = {
   public: { stroke: '#3F8624', fill: 'rgba(63,134,36,.07)', name: 'Pública' },
   private: { stroke: '#147EBA', fill: 'rgba(20,126,186,.07)', name: 'Privada' },
@@ -33,7 +34,7 @@ const S = {
   undo: [], redo: [], drag: null, temp: null, hover: null,
   highlightPending: false, showFindings: true, envFilter: '',
   saving: false, saveAgain: false, saveT: null, anT: null, anSeq: 0,
-  author: lsGet('it.author', ''), ai: { available: false },
+  author: lsGet('it.author', ''), ai: { available: false }, icons: new Set(), iconsVersion: null,
   modal: null, mtab: 'findings', sevFilter: new Set(SEVS), showDismissed: false, catFilter: '',
 };
 
@@ -221,7 +222,7 @@ function renderPalette() {
     if (!items.length) return '';
     return `<details class="pal-cat" open><summary><span class="dot" style="background:${cat.color}"></span>${esc(cat.name)}</summary>
       ${items.map((c) => `<div class="pal-item" draggable="true" data-type="${c.id}" title="${esc(c.desc || '')}">
-        <span class="ab" style="background:${c.color}">${esc(c.abbr)}</span><span class="nm">${esc(c.name)}</span></div>`).join('')}
+        ${badgeHtml(c)}<span class="nm">${esc(c.name)}</span></div>`).join('')}
     </details>`;
   }).join('');
   $('#paletteList').innerHTML = html || '<p class="hint">Sin resultados.</p>';
@@ -340,6 +341,55 @@ function renderEnvFilter() {
   sel.classList.toggle('hidden', !envs.length);
 }
 
+/* Iconos oficiales de AWS (si se instalaron con --setup-icons) */
+function iconKey(type, cfg) {
+  if (type === 'subnet') return cfg?.tier === 'public' ? 'subnet-public' : 'subnet-private';
+  return type;
+}
+function iconUrl(type, cfg) {
+  const k = iconKey(type, cfg);
+  // La clave viene del catálogo y la versión del servidor: ambas se codifican antes de usarse en HTML.
+  if (!S.icons.has(k)) return null;
+  return `/icons/aws/${encodeURIComponent(k)}.svg?v=${encodeURIComponent(S.iconsVersion || '')}`;
+}
+function badgeHtml(c, cfg, cls = 'ab') {
+  const url = iconUrl(c.id, cfg);
+  return url ? `<img class="${cls} icon" src="${esc(url)}" alt="" draggable="false">`
+    : `<span class="${cls}" style="background:${c.color}">${esc(c.abbr)}</span>`;
+}
+async function loadIcons() {
+  try {
+    const r = await api('GET', '/api/icons');
+    S.icons = new Set(r.available); S.iconsVersion = r.version;
+  } catch { S.icons = new Set(); }
+  $('#iconsHint').classList.toggle('hidden', S.icons.size > 0);
+}
+async function installIcons(btn) {
+  btn.disabled = true; btn.textContent = 'Descargando iconos oficiales (~14 MB)…';
+  try {
+    const r = await api('POST', '/api/icons/setup');
+    S.icons = new Set(r.available); S.iconsVersion = r.version;
+    $('#iconsHint').classList.add('hidden');
+    renderPalette(); renderCanvas(); renderInspector();
+    toast(`${r.installed} iconos de AWS instalados`);
+  } catch (e) {
+    toast(e.message, 9000); btn.disabled = false; btn.textContent = 'Reintentar descarga de iconos';
+  }
+}
+
+function containerStyle(n, comp, cfg) {
+  if (n.type === 'subnet') return SUBNET_STYLE[cfg.tier || 'private'];
+  if (n.type === 'account') return { stroke: ENV_COLOR[cfg.environment] || comp.color, fill: 'rgba(127,127,127,.025)', name: '' };
+  return { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
+}
+function containerSubtitle(n, st, cfg) {
+  let parts;
+  if (n.type === 'vpc') parts = [cfg.cidr, cfg.region];
+  else if (n.type === 'account') parts = [cfg.account_id, cfg.environment, cfg.ou];
+  else parts = [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''];
+  return parts.filter(Boolean).join(' · ');
+}
+
 function portSvg(n) {
   return `<g class="port" data-port="${n.id}"><circle class="port-hit" cx="${n.w}" cy="${n.h / 2}" r="13"/>
     <circle class="port-dot" cx="${n.w}" cy="${n.h / 2}" r="6.5"/><title>Arrastra hacia otro componente para conectar</title></g>`;
@@ -359,21 +409,19 @@ function renderCanvas() {
 
   for (const n of containers) {
     const comp = compOf(n), cfg = n.config || {};
-    const envc = ENV_COLOR[cfg.environment] || comp.color;
-    const st = n.type === 'subnet' ? SUBNET_STYLE[cfg.tier || 'private']
-      : n.type === 'account' ? { stroke: envc, fill: 'rgba(127,127,127,.025)', name: '' }
-        : { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
+    const st = containerStyle(n, comp, cfg);
     const sev = sevOf(n.id);
-    const sub = n.type === 'vpc' ? [cfg.cidr, cfg.region].filter(Boolean).join(' · ')
-      : n.type === 'account' ? [cfg.account_id, cfg.environment, cfg.ou].filter(Boolean).join(' · ')
-        : [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''].filter(Boolean).join(' · ');
+    const sub = containerSubtitle(n, st, cfg);
     const pending = S.highlightPending && !n.terraformed;
+    const cicon = iconUrl(n.type, cfg);
+    const cx = cicon ? 40 : 12;
     out += `<g class="container ${isSel('node', n.id) ? 'sel' : ''} ${S.hover === n.id ? 'drop-target' : ''} ${envDim(n) ? 'dim' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
       <rect class="cbody" width="${n.w}" height="${n.h}" rx="10" fill="${st.fill}" stroke="${st.stroke}"/>
       ${pending ? `<rect class="pending-ring" x="-4" y="-4" width="${n.w + 8}" height="${n.h + 8}" rx="13"/>` : ''}
       ${sev ? `<circle class="sevdot sev-${sev}" cx="${n.w - 34}" cy="16" r="5"><title>Hallazgo ${SEV_LABEL[sev]}</title></circle>` : ''}
-      <text class="chead" x="12" y="20" fill="${st.stroke}">${esc(n.type === 'vpc' ? 'VPC · ' : n.type === 'account' ? 'Cuenta · ' : '')}${esc(trunc(n.label, 40))}</text>
-      <text class="csub" x="12" y="35" fill="${st.stroke}">${esc(sub)}</text>
+      ${cicon ? `<image href="${esc(cicon)}" x="8" y="7" width="26" height="26"/>` : ''}
+      <text class="chead" x="${cx}" y="20" fill="${st.stroke}">${esc(CONTAINER_PREFIX[n.type] || '')}${esc(trunc(n.label, 40))}</text>
+      <text class="csub" x="${cx}" y="35" fill="${st.stroke}">${esc(sub)}</text>
       ${checkSvg(n, n.w - 14, 15)}
       ${portSvg(n)}
       <rect class="resize" x="${n.w - 11}" y="${n.h - 11}" width="11" height="11" rx="2" data-resize="${n.id}"/>
@@ -413,14 +461,19 @@ function renderCanvas() {
     const nNotes = (n.notes || []).length;
     const h = n.h, w = n.w;
     const badges = [nNotes ? `📝${nNotes}` : '', openQ ? `❓${openQ}` : ''].filter(Boolean).join(' ');
+    const icon = iconUrl(n.type, n.config);
+    const tx = icon ? 51 : 46;
+    const chars = Math.max(8, Math.floor((w - tx - 16) / 6.6));
     out += `<g class="node ${sel ? 'sel' : ''} ${dim ? 'dim' : ''} ${S.hover === n.id ? 'drop-target' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
       ${sev ? `<rect class="sevring sev-${sev}" x="-4" y="-4" width="${w + 8}" height="${h + 8}" rx="11"><title>Hallazgo ${SEV_LABEL[sev]}</title></rect>` : ''}
       ${pending ? `<rect class="pending-ring" x="-7" y="-7" width="${w + 14}" height="${h + 14}" rx="13"/>` : ''}
       <rect class="body" width="${w}" height="${h}" rx="8"/>
-      <path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${comp.color}"/>
-      <text class="abbr" x="19" y="${h / 2 + 4}" style="font-size:${comp.abbr.length > 4 ? 9 : 11}px">${esc(comp.abbr)}</text>
-      <text class="label" x="46" y="${h / 2 - 3}">${esc(trunc(n.label, 15))}</text>
-      <text class="type" x="46" y="${h / 2 + 12}">${esc(trunc(comp.name, 19))}</text>
+      ${icon ? `<rect class="icon-tile" x="5" y="${(h - 40) / 2}" width="40" height="40" rx="6"/>
+      <image href="${esc(icon)}" x="9" y="${(h - 32) / 2}" width="32" height="32"/>`
+    : `<path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${comp.color}"/>
+      <text class="abbr" x="19" y="${h / 2 + 4}" style="font-size:${comp.abbr.length > 4 ? 9 : 11}px">${esc(comp.abbr)}</text>`}
+      <text class="label" x="${tx}" y="${h / 2 - 3}">${esc(trunc(n.label, chars))}</text>
+      <text class="type" x="${tx}" y="${h / 2 + 12}">${esc(trunc(comp.name, chars + 4))}</text>
       ${comp.terraformable ? checkSvg(n, w - 1, 1) : ''}
       ${badges ? `<text class="nbadge" x="${w - 5}" y="${h - 5}" text-anchor="end">${badges}</text>` : ''}
       ${portSvg(n)}
@@ -687,7 +740,7 @@ function renderNodeInspector(el, n) {
   if (!tabs.some(([k]) => k === S.tab)) S.tab = 'general';
   el.innerHTML = `
     <div class="ins-head">
-      <span class="ab" style="background:${comp.color}">${esc(comp.abbr)}</span>
+      ${badgeHtml(comp, n.config)}
       <div><h3>${esc(labelOf(n))}</h3><div class="sub">${esc(comp.name)}${comp.desc ? ' — ' + esc(trunc(comp.desc, 70)) : ''}</div></div>
       <div class="actions"><button class="btn sm" data-act="dup" title="Duplicar (Ctrl+D)">⧉</button>
       <button class="btn sm danger" data-act="del" title="Eliminar (Supr)">🗑</button></div>
@@ -1280,6 +1333,7 @@ function bind() {
   });
 
   $('#paletteSearch').addEventListener('input', renderPalette);
+  $('#btnIcons').onclick = (ev) => installIcons(ev.currentTarget);
   $('#paletteList').addEventListener('dragstart', (ev) => {
     const it = ev.target.closest('.pal-item'); if (!it) return;
     ev.dataTransfer.setData('text/plain', 'infratrack:' + it.dataset.type); ev.dataTransfer.effectAllowed = 'copy';
@@ -1353,6 +1407,7 @@ async function init() {
   S.catalog = await api('GET', '/api/catalog');
   S.catalog.components.forEach((c) => { S.comp[c.id] = c; });
   S.catalog.categories.forEach((c) => { S.cats[c.id] = c; });
+  await loadIcons();
   renderPalette();
   api('GET', '/api/ai/status').then((s) => { S.ai = s; }).catch(() => {});
   await loadProjects();
