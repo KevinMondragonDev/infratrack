@@ -65,6 +65,22 @@ class ServerTest(unittest.TestCase):
         _, lst = self.call("GET", "/api/projects")
         self.assertEqual(lst[0]["id"], pid)
 
+        # Duplicar para otro ambiente y comparar
+        status, pre = self.call("POST", f"/api/projects/{pid}/duplicate",
+                                {"environment": "pre", "account_map": {"123456789012": "954066442156"}})
+        self.assertEqual(status, 201)
+        _, pre_full = self.call("GET", f"/api/projects/{pre['id']}")
+        acct = next(n for n in pre_full["nodes"] if n["type"] == "account")
+        self.assertEqual(acct["config"]["account_id"], "954066442156")
+        self.assertEqual(acct["config"]["root_mfa"], "Sin confirmar")
+        self.assertFalse(any(n.get("terraformed") for n in pre_full["nodes"]))
+        _, diff = self.call("GET", f"/api/compare/{pid}/{pre['id']}")
+        self.assertTrue(diff["changed"])  # cambia el estado de terraform
+        self.assertEqual(diff["only_a"], [])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.call("POST", f"/api/projects/{pid}/duplicate", {"environment": "pro", "account_map": {"1": "abc"}})
+        self.assertEqual(ctx.exception.code, 400)
+
     def test_path_traversal_blocked(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.call("GET", "/../app.py")

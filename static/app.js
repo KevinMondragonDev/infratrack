@@ -14,13 +14,18 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } ca
 
 const SEVS = ['critical', 'high', 'medium', 'low', 'info'];
 const SEV_LABEL = { critical: 'Crítico', high: 'Alto', medium: 'Medio', low: 'Bajo', info: 'Info' };
-const STATUSES = ['Borrador', 'En revisión', 'Aprobado', 'Requiere cambios', 'Descartado'];
+const STATUSES = ['Borrador', 'En revisión', 'Aprobado', 'Requiere cambios', 'Pendiente de definición', 'Descartado'];
+const NAMED_COLORS = { Naranja: '#ED7100', Azul: '#0972D3', Verde: '#3F8624', Morado: '#8C4FFF', Rojo: '#D13212',
+  Gris: '#7D8998', Rosa: '#E7157B', Turquesa: '#01A88D', Amarillo: '#C99700' };
+const COLOR_NAMES = Object.keys(NAMED_COLORS);
 const ACCESS = [['read', 'Lectura'], ['write', 'Escritura'], ['readwrite', 'Lectura y escritura'], ['invoke', 'Invocación / llamada'], ['network', 'Tráfico de red (puerto)']];
 const ACCESS_SHORT = { read: 'lee', write: 'escribe', readwrite: 'lee/escribe', invoke: 'invoca', network: 'red' };
 const ASSOC_TYPES = new Set(['sg', 'iam_role']);
-const isAssoc = (e) => { const a = nodeById(e.source), b = nodeById(e.target); return !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type))); };
+const isAssocPair = (a, b) => !!(a && b && (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type)
+  || (a.type === 'vpce' && b.type === 'subnet') || (a.type === 'subnet' && b.type === 'vpce')));
+const isAssoc = (e) => isAssocPair(nodeById(e.source), nodeById(e.target));
 const ENV_COLOR = { prod: '#D13212', staging: '#0972D3', qa: '#0972D3', dev: '#0972D3', sandbox: '#7D8998' };
-const CONTAINER_PREFIX = { vpc: 'VPC · ', account: 'Cuenta · ' };
+const CONTAINER_PREFIX = { vpc: 'VPC · ', account: 'Cuenta · ', zone: 'Zona · ' };
 const SUBNET_STYLE = {
   public: { stroke: '#3F8624', fill: 'rgba(63,134,36,.07)', name: 'Pública' },
   private: { stroke: '#147EBA', fill: 'rgba(20,126,186,.07)', name: 'Privada' },
@@ -32,7 +37,7 @@ const S = {
   projects: [], project: null, analysis: null,
   sel: null, tab: 'general', view: { x: 40, y: 40, k: 1 },
   undo: [], redo: [], drag: null, temp: null, hover: null,
-  highlightPending: false, showFindings: true, envFilter: '',
+  highlightPending: false, showFindings: true, envFilter: '', flowFilter: '',
   saving: false, saveAgain: false, saveT: null, anT: null, anSeq: 0,
   author: lsGet('it.author', ''), ai: { available: false }, icons: new Set(), iconsVersion: null,
   modal: null, mtab: 'findings', sevFilter: new Set(SEVS), showDismissed: false, catFilter: '',
@@ -170,7 +175,7 @@ async function analyzeNow() {
     if (seq !== S.anSeq) return;
     S.analysis = a;
   } catch (e) { console.error(e); return; }
-  renderEnvFilter(); renderCanvas(); renderStatusbar(); refreshInspectorAnalysis(); updateCopilotBadge();
+  renderEnvFilter(); renderFlowFilter(); renderCanvas(); renderStatusbar(); refreshInspectorAnalysis(); updateCopilotBadge();
   if (S.modal === 'copilot' && S.mtab !== 'ai') renderCopilotTab();
 }
 
@@ -193,7 +198,12 @@ async function openProject(id) {
     const comp = S.comp[n.type];
     if (!comp) continue;
     n.config = n.config || {};
-    comp.fields.forEach((f) => { if ('default' in f && n.config[f.key] === undefined) n.config[f.key] = f.default; });
+    comp.fields.forEach((f) => {
+      // Versiones previas guardaban true/false: false nunca distinguió "no" de "sin confirmar".
+      if (f.tri && n.config[f.key] === true) n.config[f.key] = 'Sí';
+      if (f.tri && n.config[f.key] === false) n.config[f.key] = 'Sin confirmar';
+      if ('default' in f && n.config[f.key] === undefined) n.config[f.key] = f.default;
+    });
   }
   S.project = p; S.sel = null; S.undo = []; S.redo = []; S.analysis = null;
   $('#projectSelect').value = id;
@@ -230,6 +240,7 @@ function renderPalette() {
 
 function defaultSize(type) {
   if (type === 'account') return { w: 1200, h: 800 };
+  if (type === 'zone') return { w: 620, h: 420 };
   if (type === 'vpc') return { w: 680, h: 440 };
   if (type === 'subnet') return { w: 320, h: 210 };
   if (type === 'note') return { w: 200, h: 90 };
@@ -360,15 +371,20 @@ function badgeHtml(c, cfg, cls = 'ab') {
 async function loadIcons() {
   try {
     const r = await api('GET', '/api/icons');
-    S.icons = new Set(r.available); S.iconsVersion = r.version;
-  } catch { S.icons = new Set(); }
-  $('#iconsHint').classList.toggle('hidden', S.icons.size > 0);
+    S.icons = new Set(r.available); S.iconsVersion = r.version; S.iconsOutdated = !!r.outdated;
+  } catch { S.icons = new Set(); S.iconsOutdated = false; }
+  const hint = $('#iconsHint');
+  hint.classList.toggle('hidden', S.icons.size > 0 && !S.iconsOutdated);
+  if (S.iconsOutdated) {
+    hint.querySelector('span').textContent = 'Hay componentes nuevos sin icono. Vuelve a descargar el paquete oficial para actualizarlos.';
+    $('#btnIcons').textContent = 'Actualizar iconos';
+  }
 }
 async function installIcons(btn) {
   btn.disabled = true; btn.textContent = 'Descargando iconos oficiales (~14 MB)…';
   try {
     const r = await api('POST', '/api/icons/setup');
-    S.icons = new Set(r.available); S.iconsVersion = r.version;
+    S.icons = new Set(r.available); S.iconsVersion = r.version; S.iconsOutdated = false;
     $('#iconsHint').classList.add('hidden');
     renderPalette(); renderCanvas(); renderInspector();
     toast(`${r.installed} iconos de AWS instalados`);
@@ -380,14 +396,42 @@ async function installIcons(btn) {
 function containerStyle(n, comp, cfg) {
   if (n.type === 'subnet') return SUBNET_STYLE[cfg.tier || 'private'];
   if (n.type === 'account') return { stroke: ENV_COLOR[cfg.environment] || comp.color, fill: 'rgba(127,127,127,.025)', name: '' };
+  if (n.type === 'zone') { const c = NAMED_COLORS[cfg.color] || NAMED_COLORS.Azul; return { stroke: c, fill: c + '12', name: '' }; }
   return { stroke: comp.color, fill: 'rgba(140,79,255,.035)', name: '' };
 }
 function containerSubtitle(n, st, cfg) {
   let parts;
   if (n.type === 'vpc') parts = [cfg.cidr, cfg.region];
   else if (n.type === 'account') parts = [cfg.account_id, cfg.environment, cfg.ou];
+  else if (n.type === 'zone') parts = [cfg.owner, trunc(n.description || '', 80)];
   else parts = [st.name, cfg.cidr, cfg.az ? 'AZ ' + cfg.az : ''];
   return parts.filter(Boolean).join(' · ');
+}
+
+const flows = () => P().settings?.flows || [];
+const flowById = (id) => flows().find((f) => f.id === id);
+const flowColor = (f) => NAMED_COLORS[f.color] || f.color || '#7D8998';
+function edgeInFilter(e) { return !S.flowFilter || (e.flows || []).includes(S.flowFilter); }
+function nodeInFlowFilter(n) {
+  if (!S.flowFilter || isContainer(n)) return true;
+  return P().edges.some((e) => (e.flows || []).includes(S.flowFilter) && (e.source === n.id || e.target === n.id));
+}
+function renderFlowFilter() {
+  const sel = $('#flowFilter');
+  const fs = flows();
+  if (S.flowFilter && !fs.some((f) => f.id === S.flowFilter)) S.flowFilter = '';
+  sel.innerHTML = `<option value="">Todos los flujos</option>${fs.map((f) => `<option value="${esc(f.id)}" ${f.id === S.flowFilter ? 'selected' : ''}>${esc(f.id)} ${esc(f.name || '')}</option>`).join('')}`;
+  sel.classList.toggle('hidden', !fs.length);
+}
+/* Parte un nombre en hasta 2 líneas respetando el ancho disponible. */
+function wrapLabel(text, chars) {
+  const t = (text || '').trim();
+  if (t.length <= chars) return [t];
+  const words = t.split(/\s+/);
+  let first = '';
+  while (words.length && (first + ' ' + words[0]).trim().length <= chars) first = (first + ' ' + words.shift()).trim();
+  if (!first) { first = t.slice(0, chars); return [first, trunc(t.slice(chars), chars)]; }
+  return [first, trunc(words.join(' '), chars)];
 }
 
 function portSvg(n) {
@@ -435,13 +479,22 @@ function renderCanvas() {
     const sel = isSel('edge', e.id);
     const marker = sel ? 'arrowSel' : e.terraformed ? 'arrowOk' : 'arrow';
     const assoc = isAssoc(e);
-    const txt = assoc ? 'asignado' : [e.access ? ACCESS_SHORT[e.access] : '¿acceso?', e.port ? ':' + e.port : ''].join('') + (e.label ? ' · ' + e.label : '');
-    const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2, tw = Math.min(220, txt.length * 6 + 12);
-    out += `<g class="edge ${sel ? 'sel' : ''} ${edgeSev.has(e.id) ? 'sev-edge' : ''}" data-edge="${e.id}">
+    const vpceAssoc = assoc && [a.type, b.type].includes('vpce') && [a.type, b.type].includes('subnet');
+    const base = [e.access ? ACCESS_SHORT[e.access] : '¿acceso?', e.port ? ':' + e.port : ''].join('') + (e.label ? ' · ' + e.label : '');
+    const txt = assoc ? (vpceAssoc ? 'desplegado en' : 'asignado') : base;
+    const efl = (e.flows || []).map(flowById).filter(Boolean);
+    const shown = trunc(txt, 60);
+    const dots = efl.length * 10;
+    const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2, tw = Math.min(400, shown.length * 6 + 12 + dots);
+    const stroke = !sel && efl.length ? `style="stroke:${flowColor(efl[0])};stroke-width:2.2"` : '';
+    const tip = `${labelOf(a)} → ${labelOf(b)}: ${txt}${efl.length ? '\nFlujos: ' + efl.map((f) => `${f.id} ${f.name || ''}`).join(', ') : ''}`;
+    out += `<g class="edge ${sel ? 'sel' : ''} ${edgeSev.has(e.id) ? 'sev-edge' : ''} ${edgeInFilter(e) ? '' : 'dim'}" data-edge="${e.id}">
+      <title>${esc(tip)}</title>
       <line class="hit" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}"/>
-      <line class="line ${assoc ? 'assoc' : e.access ? '' : 'undef'} ${e.terraformed ? 'ok' : ''}" x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" marker-end="url(#${marker})"/>
+      <line class="line ${assoc ? 'assoc' : e.access ? '' : 'undef'} ${e.terraformed ? 'ok' : ''}" ${stroke} x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" marker-end="url(#${marker})"/>
       <g class="elabel" transform="translate(${mx},${my})"><rect x="${-tw / 2}" y="-9" width="${tw}" height="17" rx="8"/>
-      <text y="3.5">${esc(trunc(txt, 36))}</text></g></g>`;
+      ${efl.map((f, i) => `<circle cx="${-tw / 2 + 9 + i * 10}" cy="0" r="4" style="fill:${flowColor(f)}"/>`).join('')}
+      <text x="${dots / 2}" y="3.5">${esc(shown)}</text></g></g>`;
   }
 
   for (const n of regular) {
@@ -456,28 +509,35 @@ function renderCanvas() {
     }
     const sev = sevOf(n.id);
     const pending = S.highlightPending && comp.terraformable && !n.terraformed;
-    const dim = (S.highlightPending && n.terraformed) || envDim(n);
+    const dim = (S.highlightPending && n.terraformed) || envDim(n) || !nodeInFlowFilter(n);
     const openQ = (n.questions || []).filter((q) => q.status !== 'closed' && !q.answer).length;
     const nNotes = (n.notes || []).length;
     const h = n.h, w = n.w;
     const badges = [nNotes ? `📝${nNotes}` : '', openQ ? `❓${openQ}` : ''].filter(Boolean).join(' ');
-    const icon = iconUrl(n.type, n.config);
+    const cfg = n.config || {};
+    const custom = n.type === 'custom_ext' && cfg.abbr;
+    const icon = custom ? null : iconUrl(n.type, cfg);
+    const color = n.type === 'custom_ext' ? (NAMED_COLORS[cfg.color] || comp.color) : comp.color;
+    const abbr = custom ? String(cfg.abbr).slice(0, 6) : comp.abbr;
     const tx = icon ? 51 : 46;
-    const chars = Math.max(8, Math.floor((w - tx - 16) / 6.6));
+    const chars = Math.max(8, Math.floor((w - tx - 16) / 6.8));
+    const lines = wrapLabel(n.label, chars);
+    const y0 = lines.length > 1 ? h / 2 - 9 : h / 2 - 3;
     out += `<g class="node ${sel ? 'sel' : ''} ${dim ? 'dim' : ''} ${S.hover === n.id ? 'drop-target' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
       ${sev ? `<rect class="sevring sev-${sev}" x="-4" y="-4" width="${w + 8}" height="${h + 8}" rx="11"><title>Hallazgo ${SEV_LABEL[sev]}</title></rect>` : ''}
       ${pending ? `<rect class="pending-ring" x="-7" y="-7" width="${w + 14}" height="${h + 14}" rx="13"/>` : ''}
       <rect class="body" width="${w}" height="${h}" rx="8"/>
       ${icon ? `<rect class="icon-tile" x="5" y="${(h - 40) / 2}" width="40" height="40" rx="6"/>
       <image href="${esc(icon)}" x="9" y="${(h - 32) / 2}" width="32" height="32"/>`
-    : `<path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${comp.color}"/>
-      <text class="abbr" x="19" y="${h / 2 + 4}" style="font-size:${comp.abbr.length > 4 ? 9 : 11}px">${esc(comp.abbr)}</text>`}
-      <text class="label" x="${tx}" y="${h / 2 - 3}">${esc(trunc(n.label, chars))}</text>
-      <text class="type" x="${tx}" y="${h / 2 + 12}">${esc(trunc(comp.name, chars + 4))}</text>
+    : `<path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${color}"/>
+      <text class="abbr" x="19" y="${h / 2 + 4}" style="font-size:${abbr.length > 4 ? 9 : 11}px">${esc(abbr)}</text>`}
+      ${lines.map((l, i) => `<text class="label" x="${tx}" y="${y0 + i * 13}">${esc(l)}</text>`).join('')}
+      <text class="type" x="${tx}" y="${y0 + lines.length * 13 + 2}">${esc(trunc(comp.name, chars + 4))}</text>
       ${comp.terraformable ? checkSvg(n, w - 1, 1) : ''}
       ${badges ? `<text class="nbadge" x="${w - 5}" y="${h - 5}" text-anchor="end">${badges}</text>` : ''}
       ${portSvg(n)}
-      <title>${esc(n.label)} — ${esc(comp.name)}${n.terraformed ? ' (terraformado)' : ''}</title>
+      <rect class="resize nresize" x="${w - 9}" y="${h - 9}" width="9" height="9" rx="2" data-resize="${n.id}"/>
+      <title>${esc(n.label)} — ${esc(comp.name)}${n.terraformed ? ' (terraformado)' : ''}${n.description ? '\n' + esc(trunc(n.description, 200)) : ''}</title>
     </g>`;
   }
 
@@ -544,8 +604,10 @@ function onPointerMove(ev) {
   } else if (d.kind === 'resize') {
     if (!d.snap) { snapshot(); d.snap = true; }
     const n = nodeById(d.id);
-    n.w = Math.max(n.type === 'note' ? 100 : 160, snap(d.w0 + p.x - d.p0.x));
-    n.h = Math.max(n.type === 'note' ? 40 : 90, snap(d.h0 + p.y - d.p0.y));
+    const minW = isContainer(n) ? 160 : n.type === 'note' ? 100 : 110;
+    const minH = isContainer(n) ? 90 : n.type === 'note' ? 40 : 48;
+    n.w = Math.max(minW, snap(d.w0 + p.x - d.p0.x));
+    n.h = Math.max(minH, snap(d.h0 + p.y - d.p0.y));
     renderCanvas();
   } else if (d.kind === 'connect') {
     S.temp.x2 = p.x; S.temp.y2 = p.y;
@@ -581,7 +643,7 @@ function onPointerUp(ev) {
 }
 
 function guessAccess(a, b) {
-  if (ASSOC_TYPES.has(a.type) || ASSOC_TYPES.has(b.type)) return null;
+  if (isAssocPair(a, b)) return null;
   if (['users', 'onprem', 'alb', 'nlb', 'cloudfront'].includes(a.type)) return 'network';
   if (['rds', 'aurora', 'elasticache', 'documentdb', 'efs', 'redshift', 'msk', 'ec2', 'asg', 'ecs', 'eks'].includes(b.type)) return 'network';
   if (['lambda', 'stepfn', 'glue', 'emr', 'apigw', 'athena'].includes(b.type)) return 'invoke';
@@ -770,6 +832,8 @@ function renderNodeInspector(el, n) {
         ${fieldHtml({ label: 'Ticket / referencia', type: 'text', placeholder: 'JIRA-123' }, n.ticket, 'data-bind="ticket"')}
       </div>
       ${fieldHtml({ label: 'Propósito / descripción', type: 'textarea', placeholder: '¿Para qué existe este componente?' }, n.description, 'data-bind="description"')}
+      ${fieldHtml({ label: 'Tags propios (clave=valor por línea)', type: 'textarea', placeholder: 'DataClassification=confidencial',
+    help: 'Se suman a los tags por defecto del proyecto y de la cuenta.' }, n.tags, 'data-bind="tags"')}
       <div class="section-title">Ubicación</div><div id="insLocation" class="muted"></div>
       <div class="section-title">Conexiones</div><div id="insConns"></div>`;
     refreshInspectorAnalysis();
@@ -838,6 +902,10 @@ function renderEdgeInspector(el, e) {
         ${fieldHtml({ label: 'Protocolo', type: 'select', options: ['tcp', 'udp'] }, e.protocol || 'tcp', 'data-ebind="protocol"')}
       </div>`}
       ${fieldHtml({ label: 'Etiqueta', type: 'text', placeholder: 'ej. eventos de pedidos' }, e.label, 'data-ebind="label"')}
+      <div class="field"><label>Flujos</label>${flows().length ? `<div class="ms">${flows().map((f) => {
+        const on = (e.flows || []).includes(f.id);
+        return `<label class="${on ? 'on' : ''}"><input type="checkbox" data-eflow="${esc(f.id)}" ${on ? 'checked' : ''}><span class="fdot" style="background:${flowColor(f)}"></span>${esc(f.id)} ${esc(f.name || '')}</label>`;
+      }).join('')}</div>` : '<div class="help">Define los flujos del proyecto (FL-01 Ingesta, FL-02 Egresión…) en el panel del proyecto.</div>'}</div>
       ${fieldHtml({ label: 'Notas', type: 'textarea', placeholder: 'Detalles del flujo, volumen, formato…' }, e.notes, 'data-ebind="notes"')}
       <div class="section-title">Lo que necesitas para esta conexión</div>
       <div id="edgePlan"><p class="muted">Analizando…</p></div>
@@ -947,6 +1015,16 @@ function projectStatsHtml() {
     <table class="tbl"><tr><th>Estado de diseño</th><th>Componentes</th></tr>${STATUSES.map((st) => `<tr><td>${st}</td><td>${s.by_status[st] || 0}</td></tr>`).join('')}</table>`;
 }
 
+/* Editor de listas del proyecto (flujos, tags). */
+function listEditor(kind, rows, cols) {
+  return `<div class="rules"><div class="rhead" style="grid-template-columns:${cols.map(() => '1fr').join(' ')} 26px">${cols.map((c) => `<span>${esc(c.label)}</span>`).join('')}<span></span></div>
+    ${rows.map((r, i) => `<div class="rline" style="grid-template-columns:${cols.map(() => '1fr').join(' ')} 26px">${cols.map((c) => (c.options
+      ? `<select data-plist="${kind}" data-row="${i}" data-col="${c.key}">${c.options.map((o) => `<option ${o === r[c.key] ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+      : `<input type="text" data-plist="${kind}" data-row="${i}" data-col="${c.key}" value="${esc(r[c.key])}" placeholder="${esc(c.placeholder || '')}">`)).join('')}
+      <button class="btn sm ghost" data-pdel="${kind}" data-row="${i}" title="Quitar">✕</button></div>`).join('') || '<div class="muted" style="padding:6px">Sin elementos.</div>'}
+  </div><button class="btn sm" data-padd="${kind}" style="margin:6px 0 10px">+ Agregar</button>`;
+}
+
 function renderProjectInspector(el) {
   const p = P(), st = p.settings || {};
   el.innerHTML = `
@@ -963,6 +1041,16 @@ function renderProjectInspector(el) {
         ${fieldHtml({ label: 'Prefijo de nombres', type: 'text', placeholder: 'empresa-app' }, st.prefix, 'data-sbind="prefix"')}
       </div>
       <div class="field"><label>Tu nombre (para notas y preguntas)</label><input type="text" id="authorInput" value="${esc(S.author)}"></div>
+      <div class="section-title">Flujos (color de las conexiones)</div>
+      ${listEditor('flows', flows(), [{ key: 'id', label: 'ID', placeholder: 'FL-01' }, { key: 'name', label: 'Nombre', placeholder: 'Ingesta' },
+    { key: 'color', label: 'Color', options: COLOR_NAMES }])}
+      <div class="section-title">Tags de gobierno</div>
+      ${fieldHtml({ label: 'Tags obligatorios (uno por línea)', type: 'textarea', placeholder: 'CostCenter\nEnvironment\nProject',
+    help: 'El Copilot avisa qué componentes no los tienen y genera el bloque default_tags de Terraform.' },
+    (st.required_tags || []).join('\n'), 'data-sbind="required_tags"')}
+      <button class="btn sm" data-act="tagTemplate" style="margin:-4px 0 10px">Usar los 12 tags de gobierno</button>
+      <label class="field" style="display:block;font-weight:600;font-size:12px">Tags por defecto (default_tags)</label>
+      ${listEditor('tags', st.tags || [], [{ key: 'key', label: 'Clave', placeholder: 'CostCenter' }, { key: 'value', label: 'Valor', placeholder: 'CC-123' }])}
       <div class="section-title">Resumen</div><div id="projStats">${projectStatsHtml()}</div>
       <div class="section-title">Cómo se usa</div>
       <div class="legend">
@@ -986,7 +1074,7 @@ function readInput(t) {
 }
 function onInspectorFocus(ev) {
   const t = ev.target;
-  if (t.matches('[data-bind],[data-cfg],[data-ebind],[data-pbind],[data-sbind],[data-qanswer],[data-rcell]') && S.focusEl !== t) { S.focusEl = t; snapshot(); }
+  if (t.matches('[data-bind],[data-cfg],[data-ebind],[data-pbind],[data-sbind],[data-qanswer],[data-rcell],[data-plist]') && S.focusEl !== t) { S.focusEl = t; snapshot(); }
 }
 function onInspectorInput(ev) {
   const t = ev.target;
@@ -1024,6 +1112,20 @@ function onInspectorInput(ev) {
   } else if (t.dataset.pbind) {
     setPath(P(), t.dataset.pbind, readInput(t));
     if (t.dataset.pbind === 'name') { const o = $(`#projectSelect option[value="${P().id}"]`); if (o) o.textContent = P().name; }
+  } else if (t.dataset.plist) {
+    P().settings = P().settings || {};
+    const list = P().settings[t.dataset.plist] = P().settings[t.dataset.plist] || [];
+    if (list[Number(t.dataset.row)]) list[Number(t.dataset.row)][t.dataset.col] = t.value;
+    if (t.dataset.plist === 'flows') renderFlowFilter();
+  } else if (t.dataset.eflow) {
+    const e = edgeById(S.sel.id);
+    const set = new Set(e.flows || []);
+    if (t.checked) set.add(t.dataset.eflow); else set.delete(t.dataset.eflow);
+    e.flows = [...set];
+    t.parentElement.classList.toggle('on', t.checked);
+  } else if (t.dataset.sbind === 'required_tags') {
+    P().settings = P().settings || {};
+    P().settings.required_tags = t.value.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
   } else if (t.dataset.sbind) {
     P().settings = P().settings || {}; setPath(P().settings, t.dataset.sbind, readInput(t));
   } else if (t.dataset.qanswer) {
@@ -1047,6 +1149,14 @@ function onInspectorClick(ev) {
   if (t.dataset.dismiss) { dismissFinding(t.dataset.dismiss); return; }
   if (t.dataset.undismiss) { undismissFinding(t.dataset.undismiss); return; }
   if (t.dataset.aifocus) { askAI(null, t.dataset.aifocus, $('#aiNodeOut')); return; }
+  if (t.dataset.padd || t.dataset.pdel) {
+    snapshot(); P().settings = P().settings || {};
+    const kind = t.dataset.padd || t.dataset.pdel;
+    const list = P().settings[kind] = P().settings[kind] || [];
+    if (t.dataset.padd) list.push(kind === 'flows' ? { id: `FL-${String(list.length + 1).padStart(2, '0')}`, name: '', color: COLOR_NAMES[list.length % COLOR_NAMES.length] } : { key: '', value: '' });
+    else list.splice(Number(t.dataset.row), 1);
+    const sc = $('#inspector').scrollTop; changed({ inspector: true }); renderFlowFilter(); $('#inspector').scrollTop = sc; return;
+  }
   if (t.dataset.addrow) {
     const f = compOf(n).fields.find((x) => x.key === t.dataset.addrow);
     snapshot(); n.config = n.config || {};
@@ -1079,6 +1189,13 @@ function onInspectorClick(ev) {
       else if (e) { snapshot(); e.terraformed = !e.terraformed; changed({ inspector: true }); }
       break;
     case 'del': deleteSelection(); break;
+    case 'tagTemplate': {
+      const tpl = S.analysis?.tags?.template || [];
+      snapshot(); P().settings = P().settings || {};
+      const cur = new Set(P().settings.required_tags || []);
+      P().settings.required_tags = [...cur, ...tpl.filter((x) => !cur.has(x))];
+      changed({ inspector: true }); break;
+    }
     case 'applySg': {
       const sug = (S.analysis && S.analysis.sg_suggestions && S.analysis.sg_suggestions[n.id]) || [];
       if (!sug.length) return;
@@ -1150,10 +1267,11 @@ function openCopilot(tab) {
 function renderCopilotTab() {
   const A = S.analysis;
   const tabs = [['security', 'Seguridad'], ['findings', 'Hallazgos'], ['iam', 'Roles IAM'], ['sg', 'Security Groups'], ['questions', 'Preguntas al arquitecto'],
-    ['pending', 'Pendientes de terraform'], ['ai', 'Copilot IA']];
+    ['pending', 'Pendientes de terraform'], ['tags', 'Tags y Terraform'], ['ai', 'Copilot IA']];
   let c = '';
   if (!A) c = '<p class="muted">Analizando…</p>';
   else if (S.mtab === 'security') c = securityHtml(A);
+  else if (S.mtab === 'tags') c = tagsHtml(A);
   else if (S.mtab === 'findings') {
     const cats = [...new Set(A.findings.map((f) => f.category))].sort();
     const list = A.findings.filter((f) => S.sevFilter.has(f.severity) && (!S.catFilter || f.category === S.catFilter) && (S.showDismissed || !f.dismissed));
@@ -1206,6 +1324,18 @@ function renderCopilotTab() {
       : `<p>El Copilot IA es opcional. Las reglas de AWS ya funcionan sin él.</p><p class="muted">Para habilitarlo: <code>pip install anthropic</code> y exporta <code>ANTHROPIC_API_KEY</code> antes de iniciar <code>app.py</code>. (${esc(S.ai.reason || '')})</p>`;
   }
   $('#modalBody').innerHTML = `<div class="mtabs">${tabs.map(([k, l]) => `<button class="tab ${S.mtab === k ? 'on' : ''}" data-mtabbtn="${k}">${l}</button>`).join('')}</div><div class="mcontent">${c}</div>`;
+}
+
+function tagsHtml(A) {
+  const t = A.tags || {};
+  const missing = A.findings.filter((f) => f.rule === 'TAG-MISSING');
+  return `${t.required && t.required.length ? `<p>Tags obligatorios: ${t.required.map((k) => `<span class="chip ${t.missing_in_default.includes(k) ? 'st-open' : 'st-closed'}">${esc(k)}</span>`).join(' ')}</p>
+      <p class="muted">Verde = definido en los tags por defecto del proyecto. Naranja = falta (cárgalo en el panel del proyecto, en la cuenta o en cada componente).</p>`
+    : '<p class="muted">Define los tags obligatorios en el panel del proyecto (o usa “Usar los 12 tags de gobierno”).</p>'}
+    ${missing.map((f) => findingHtml(f)).join('')}
+    ${t.providers ? `<div class="section-title">Terraform: default_tags</div>${codeBlock(t.providers)}` : ''}
+    ${t.node_tags && t.node_tags.length ? `<div class="section-title">Tags adicionales por componente</div><table class="tbl"><tr><th>Componente</th><th>Tags</th></tr>
+      ${t.node_tags.map((x) => `<tr><td><a class="link" data-goto="${x.node_id}">${esc(x.label)}</a></td><td><code>${esc(Object.entries(x.tags).map(([k, v]) => `${k}=${v}`).join(', '))}</code></td></tr>`).join('')}</table>` : ''}`;
 }
 
 const CTRL_STATUS = {
@@ -1293,6 +1423,8 @@ async function askAI(question, nodeId, outEl) {
 async function onMenu(act) {
   $('#menu').classList.add('hidden');
   const p = P();
+  if (act === 'dup-env') { await duplicateForEnvironment(); return; }
+  if (act === 'compare') { await openCompare(); return; }
   if (act === 'duplicate') { await flushSave(); const c = await api('POST', `/api/projects/${p.id}/duplicate`); await loadProjects(c.id); toast('Proyecto duplicado'); }
   else if (act === 'delete') {
     if (!confirm(`¿Eliminar “${p.name}”? Se moverá a data/trash.`)) return;
@@ -1314,6 +1446,52 @@ async function onMenu(act) {
         <td>${Math.round(b.size / 1024)} KB</td><td><button class="btn sm" data-restore="${b.id}">Restaurar</button></td></tr>`).join('')}</table>` : '<p>Aún no hay respaldos.</p>'}</div>`;
   }
 }
+async function duplicateForEnvironment() {
+  await flushSave();
+  const env = prompt('Ambiente destino (ej. pre, pro, qa):', 'pre');
+  if (!env) return;
+  const map = {};
+  for (const a of P().nodes.filter((n) => n.type === 'account')) {
+    const old = a.config?.account_id || '';
+    const v = prompt(`ID de la cuenta ${env.toUpperCase()} que reemplaza a “${labelOf(a)}” (${old || 'sin ID'}):`, '');
+    if (v === null) return;
+    if (v.trim() && old) map[old] = v.trim();
+  }
+  try {
+    const c = await api('POST', `/api/projects/${P().id}/duplicate`, { environment: env.trim(), account_map: map });
+    await loadProjects(c.id); toast(`Creado ${c.name}: la línea base de las cuentas quedó “Sin confirmar”`, 5000);
+  } catch (e) { toast(e.message, 6000); }
+}
+
+async function openCompare() {
+  await flushSave();
+  const others = S.projects.filter((p) => p.id !== P().id);
+  openModal('compare', 'Comparar ambientes');
+  if (!others.length) { $('#modalBody').innerHTML = '<div class="mcontent"><p>No hay otro proyecto para comparar. Usa “Duplicar como otro ambiente”.</p></div>'; return; }
+  $('#modalBody').innerHTML = `<div class="mcontent"><div class="filters">Comparar <b>${esc(P().name)}</b> con
+    <select id="cmpOther" class="btn sm">${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div id="cmpOut"></div></div>`;
+  const run = async () => {
+    const d = await api('GET', `/api/compare/${P().id}/${$('#cmpOther').value}`);
+    const v = (x) => esc(Array.isArray(x) ? x.join(', ') : (x ?? '—'));
+    const list = (arr) => (arr.length ? `<ul>${arr.map((n) => `<li>${esc(n.label)} <span class="muted">(${esc(n.type_name)})</span></li>`).join('')}</ul>` : '<p class="muted">Ninguno.</p>');
+    $('#cmpOut').innerHTML = `<p>${d.same} componentes iguales · ${d.changed.length} con diferencias · ${d.only_a.length} sólo en A · ${d.only_b.length} sólo en B</p>
+      <div class="row2"><div><div class="section-title">Sólo en ${esc(d.a.name)}</div>${list(d.only_a)}</div>
+      <div><div class="section-title">Sólo en ${esc(d.b.name)}</div>${list(d.only_b)}</div></div>
+      <div class="section-title">Diferencias</div>
+      ${d.changed.length ? `<table class="tbl"><tr><th>Componente</th><th>Campo</th><th>${esc(d.a.name)}</th><th>${esc(d.b.name)}</th></tr>
+        ${d.changed.map((c) => [
+          ...(c.terraformed_a !== c.terraformed_b ? [`<tr><td>${esc(c.label)}</td><td>Terraformado</td><td>${c.terraformed_a ? '✓' : '—'}</td><td>${c.terraformed_b ? '✓' : '—'}</td></tr>`] : []),
+          ...c.diffs.map((x) => `<tr><td>${esc(c.label)}</td><td>${esc(x.field)}</td><td>${v(x.a)}</td><td>${v(x.b)}</td></tr>`)].join('')).join('')}</table>` : '<p class="muted">Sin diferencias.</p>'}
+      <div class="section-title">Conexiones</div>
+      <p class="muted">Sólo en A: ${d.edges_only_a.map((x) => `${esc(x.source)} → ${esc(x.target)}`).join('; ') || '—'}<br>
+      Sólo en B: ${d.edges_only_b.map((x) => `${esc(x.source)} → ${esc(x.target)}`).join('; ') || '—'}<br>
+      Distinto acceso/puerto: ${d.edges_changed.map((x) => `${esc(x.source)} → ${esc(x.target)} (${esc(x.a || '—')}${x.port_a ? ':' + esc(x.port_a) : ''} vs ${esc(x.b || '—')}${x.port_b ? ':' + esc(x.port_b) : ''})`).join('; ') || '—'}</p>`;
+  };
+  const runSafe = () => run().catch((e) => { $('#cmpOut').innerHTML = `<p style="color:var(--danger)">${esc(e.message)}</p>`; });
+  $('#cmpOther').onchange = runSafe;
+  await runSafe();
+}
+
 async function restoreBackup(id) {
   if (!confirm('¿Restaurar este respaldo? La versión actual quedará también respaldada.')) return;
   await api('POST', `/api/projects/${P().id}/backups/${id}/restore`);
@@ -1356,6 +1534,7 @@ function bind() {
   $('#tglPending').onchange = (e) => { S.highlightPending = e.target.checked; renderCanvas(); };
   $('#tglFindings').onchange = (e) => { S.showFindings = e.target.checked; renderCanvas(); };
   $('#envFilter').onchange = (e) => { S.envFilter = e.target.value; renderCanvas(); };
+  $('#flowFilter').onchange = (e) => { S.flowFilter = e.target.value; renderCanvas(); };
   $('#statusbar').addEventListener('click', (ev) => {
     const ch = ev.target.closest('.chip'); if (!ch) return;
     if (ch.dataset.sev) { S.sevFilter = new Set([ch.dataset.sev]); openCopilot('findings'); } else openCopilot(ch.dataset.mtab);

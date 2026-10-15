@@ -44,6 +44,16 @@ def b(key, label, default=False, **kw):
     return F(key, label, "bool", default=default, **kw)
 
 
+UNCONFIRMED = "Sin confirmar"
+LOCATION = "Ubicación"
+TRI = ["Sí", "No", UNCONFIRMED]
+
+
+def tri(key, label, **kw):
+    """Dato de línea base: Sí / No / Sin confirmar (sin confirmar no cuenta como falla)."""
+    return F(key, label, "select", options=TRI, default=UNCONFIRMED, tri=True, **kw)
+
+
 def num(key, label, **kw):
     return F(key, label, "number", **kw)
 
@@ -120,6 +130,9 @@ C("tgw", "Transit Gateway", "network", "TGW", desc="Hub para conectar VPCs y on-
     b("default_rt_assoc", "Asociación a tabla de rutas por defecto", True),
     b("ram_share", "Compartido por RAM con otras cuentas"),
     ta("route_tables", "Tablas de rutas / segmentación"),
+    sel("egress_inspection", "Salida a internet vía TGW", ["Sin inspección", "Inspection VPC (Network Firewall)",
+                                                           "Proxy / firewall corporativo", "Por definir"],
+        help="Si la salida centralizada pasa por inspección, el Copilot la cuenta como salida filtrada."),
 ])
 C("peering", "VPC Peering", "network", "PCX", desc="Conexión 1:1 entre dos VPC (sin transitividad).", fields=[
     b("cross_account", "Entre cuentas"),
@@ -272,7 +285,8 @@ C("sg", "Security Group", "network", "SG", vpc="vpc",
 C("nacl", "Network ACL", "network", "NACL", vpc="vpc",
   desc="Firewall stateless por subnet. Colócala dentro de la subnet que protege (fuera de subnets = NACL por defecto de la VPC).",
   fields=[
-    sel("kind", "Tipo", ["Personalizada (deniega todo lo no permitido)", "Default (permite todo)"], required=True,
+    sel("kind", "Tipo", ["Personalizada (deniega todo lo no permitido)", "Default (permite todo)",
+                         "Pendiente de definición (no evaluar)"], required=True,
         default="Personalizada (deniega todo lo no permitido)"),
     F("rules", "Reglas (se evalúan por número, la primera que coincide gana)", "rules", columns=[
         {"key": "rule_no", "label": "#", "type": "number"},
@@ -747,7 +761,10 @@ C("mq", "Amazon MQ", "integration", "MQ", vpc="required",
 C("eventbridge", "EventBridge", "integration", "EB", principal="events.amazonaws.com", desc="Bus de eventos y scheduler.", fields=[
     sel("bus", "Bus", ["default", "custom", "partner"], required=True),
     ta("rules", "Reglas / patrones"),
-    b("scheduler", "EventBridge Scheduler"),
+    b("scheduler", "EventBridge Scheduler (rol confía en scheduler.amazonaws.com)"),
+    b("scheduler_dlq", "DLQ en los schedules", show_if={"scheduler": [True]}),
+    ta("schedules", "Schedules (cron y zona horaria por flujo)", show_if={"scheduler": [True]},
+       placeholder="FL-01 ingesta: cron(0 2 * * ? *) America/Mexico_City"),
     b("archive", "Archive & replay"),
     b("dlq", "DLQ en targets"),
     b("pipes", "EventBridge Pipes"),
@@ -766,7 +783,8 @@ C("iam_role", "IAM Role", "security", "IAM", desc="Rol IAM. Conéctalo al compon
                                                              "elasticmapreduce.amazonaws.com", "glue.amazonaws.com",
                                                              "states.amazonaws.com", "events.amazonaws.com",
                                                              "firehose.amazonaws.com", "redshift.amazonaws.com",
-                                                             "apigateway.amazonaws.com", "Cuenta / usuarios (SSO)",
+                                                             "apigateway.amazonaws.com", "scheduler.amazonaws.com",
+                                                             "Cuenta / usuarios (SSO)",
                                                              "OIDC (GitHub Actions / CI)"], required=True),
     ta("managed_policies", "Políticas administradas"),
     ta("inline", "Política inline (JSON)", placeholder='{"Version": "2012-10-17", "Statement": [...]}',
@@ -832,27 +850,28 @@ C("account", "Cuenta AWS", "governance", "ACCT", container=True,
     sel("environment", "Ambiente / propósito", ENVIRONMENTS, required=True),
     F("ou", "Unidad organizacional (OU)", placeholder="Workloads/Prod"),
     F("regions", "Regiones permitidas", placeholder="us-east-1, us-west-2"),
-    b("root_mfa", "Root con MFA (de hardware o passkey)", required=True),
-    b("root_no_keys", "Root sin access keys", required=True),
-    b("identity_center", "Acceso humano por IAM Identity Center (SSO)", required=True),
+    tri("root_mfa", "Root con MFA (de hardware o passkey)", required=True),
+    tri("root_no_keys", "Root sin access keys", required=True),
+    tri("identity_center", "Acceso humano por IAM Identity Center (SSO)", required=True),
     num("iam_users_keys", "Usuarios IAM con access keys de larga duración", default=0),
-    b("password_policy", "Política de contraseñas IAM", show_if={"identity_center": [False, None]}),
-    b("guardduty", "GuardDuty habilitado", required=True),
-    b("securityhub", "Security Hub habilitado", required=True),
+    tri("password_policy", "Política de contraseñas IAM", show_if={"identity_center": ["No", UNCONFIRMED, False, None]}),
+    tri("guardduty", "GuardDuty habilitado", required=True),
+    tri("securityhub", "Security Hub habilitado", required=True),
     ms("sh_standards", "Estándares de Security Hub", ["AWS Foundational Security Best Practices", "CIS AWS Foundations",
-                                                     "PCI DSS", "NIST SP 800-53"], show_if={"securityhub": [True]}),
-    b("config", "AWS Config grabando todos los recursos", required=True),
-    b("access_analyzer", "IAM Access Analyzer", required=True),
-    b("cloudtrail", "Cubierta por CloudTrail (trail de organización o propio)", required=True),
-    b("macie", "Macie (descubrimiento de datos sensibles)"),
-    b("inspector", "Inspector (vulnerabilidades EC2/ECR/Lambda)"),
-    b("ebs_default_encryption", "Cifrado EBS por defecto", required=True),
-    b("s3_account_bpa", "S3 Block Public Access a nivel cuenta", required=True),
-    b("imdsv2_default", "IMDSv2 por defecto a nivel cuenta"),
-    b("central_logs", "Logs enviados a la cuenta log-archive"),
-    b("findings_alerts", "Hallazgos enrutados a alertas (EventBridge → SNS/Chat/SIEM)"),
-    b("security_contact", "Contacto alterno de seguridad configurado"),
-    b("budget_alerts", "Alertas de presupuesto / anomalías de costo"),
+                                                     "PCI DSS", "NIST SP 800-53"], show_if={"securityhub": ["Sí", True]}),
+    tri("config", "AWS Config grabando todos los recursos", required=True),
+    tri("access_analyzer", "IAM Access Analyzer", required=True),
+    tri("cloudtrail", "Cubierta por CloudTrail (trail de organización o propio)", required=True),
+    tri("macie", "Macie (descubrimiento de datos sensibles)"),
+    tri("inspector", "Inspector (vulnerabilidades EC2/ECR/Lambda)"),
+    tri("ebs_default_encryption", "Cifrado EBS por defecto", required=True),
+    tri("s3_account_bpa", "S3 Block Public Access a nivel cuenta", required=True),
+    tri("imdsv2_default", "IMDSv2 por defecto a nivel cuenta"),
+    tri("central_logs", "Logs enviados a la cuenta log-archive"),
+    tri("findings_alerts", "Hallazgos enrutados a alertas (EventBridge → SNS/Chat/SIEM)"),
+    tri("security_contact", "Contacto alterno de seguridad configurado"),
+    tri("budget_alerts", "Alertas de presupuesto / anomalías de costo"),
+    ta("tags", "Tags de la cuenta (clave=valor por línea)", placeholder="Environment=pre\nCostCenter=CC-123"),
 ])
 C("organization", "AWS Organizations", "governance", "ORG",
   desc="Organización, Control Tower, SCPs y administradores delegados de seguridad.", fields=[
@@ -926,6 +945,15 @@ C("securebrowser", "WorkSpaces Secure Browser", "enduser", "WSB",
     b("vpc_access", "Accede a apps dentro de la VPC"),
 ])
 
+# ───────────────────────────── Zonas ─────────────────────────────
+ZONE_COLORS = ["Naranja", "Azul", "Verde", "Morado", "Rojo", "Gris", "Rosa", "Turquesa", "Amarillo"]
+C("zone", "Zona / Workspace", "governance", "ZONA", container=True, terraformable=False,
+  desc="Agrupador visual (orquestación, datos, seguridad corporativa, pipeline IaC…). No es una cuenta ni una red: "
+       "no cambia la evaluación de seguridad.", fields=[
+    sel("color", "Color", ZONE_COLORS, default="Azul"),
+    F("owner", "Dueño / equipo", placeholder="Equipo de datos"),
+])
+
 # ───────────────────────────── Externos ─────────────────────────────
 C("users", "Usuarios / Internet", "external", "WWW", terraformable=False, desc="Clientes externos que llegan por internet.",
   fields=[F("audience", "Audiencia", placeholder="Clientes B2C, ~10k usuarios/día")])
@@ -941,6 +969,82 @@ C("saas", "API externa / SaaS", "external", "EXT", terraformable=False, desc="Se
       sel("auth", "Autenticación", ["API key", "OAuth2", "mTLS", "Ninguna"]),
       b("ip_allowlist", "Requiere IP fija de salida (allowlist)"),
   ])
+C("idp", "Identidad corporativa (IdP)", "external", "IdP", terraformable=False,
+  desc="Azure AD / Entra ID, Okta, Ping… federado con IAM Identity Center, Cognito o WorkSpaces.", fields=[
+    sel("product", "Producto", ["Microsoft Entra ID (Azure AD)", "Okta", "Ping Identity", "Google Workspace", "AD on-premise", "Otro"],
+        required=True),
+    sel("protocol", "Protocolo", ["SAML 2.0", "OIDC", "SCIM + SAML"], required=True),
+    tri("mfa", "MFA exigido por el IdP", required=True),
+    b("conditional_access", "Acceso condicional (dispositivo / ubicación)"),
+])
+C("corp_proxy", "Proxy corporativo", "external", "PRXY", terraformable=False,
+  desc="Proxy de salida de la empresa. El tráfico que pasa por aquí cuenta como salida filtrada.", fields=[
+    F("product", "Producto", placeholder="Zscaler, Squid, Bluecoat…"),
+    sel("location", LOCATION, ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor (SSE)"], required=True),
+    b("tls_inspection", "Inspección TLS (reemplaza certificados)"),
+    tri("ca_distributed", "Certificado raíz del proxy instalado en imágenes/AMIs/layers", show_if={"tls_inspection": [True]}),
+    ta("allowlist", "Allowlist de dominios", placeholder=".adobe.io\n.snowflakecomputing.com"),
+    F("egress_ips", "IPs públicas de salida", placeholder="203.0.113.10/32"),
+])
+C("corp_firewall", "Firewall corporativo", "external", "FW", terraformable=False,
+  desc="Firewall perimetral de la empresa (Checkpoint, Palo Alto, Fortinet…).", fields=[
+    F("product", "Producto", placeholder="Checkpoint / Firewall North"),
+    sel("location", LOCATION, ["On-premise (vía TGW/VPN/DX)", "Inspection VPC en AWS", "Nube del proveedor"], required=True),
+    ta("rules", "Reglas / tickets de apertura", placeholder="CU-NF15: 443 hacia *.adobe.io"),
+])
+C("secops", "Seguridad externa (CSPM / CNAPP / SIEM)", "external", "SEC", terraformable=False,
+  desc="Wiz, Sysdig, Prisma, Splunk… que leen la cuenta o reciben eventos.", fields=[
+    F("product", "Producto", required=True, placeholder="Wiz"),
+    sel("integration", "Integración", ["Rol cross-account de sólo lectura", "Agente en cargas", "Envío de logs/eventos", "Mixta"],
+        required=True),
+    tri("external_id", "Rol con ExternalId", show_if={"integration": ["Rol cross-account de sólo lectura", "Mixta"]}),
+    F("vendor_account", "Cuenta AWS del proveedor", placeholder="123456789012"),
+])
+C("observability", "Observabilidad externa", "external", "OBS", terraformable=False,
+  desc="Dynatrace, Datadog, correlación de logs (Alma)…", fields=[
+    F("product", "Producto", required=True, placeholder="Dynatrace"),
+    sel("integration", "Integración", ["Rol cross-account (métricas)", "Agente / OneAgent", "Envío de logs (Firehose/HTTP)", "Mixta"],
+        required=True),
+    tri("external_id", "Rol con ExternalId", show_if={"integration": ["Rol cross-account (métricas)", "Mixta"]}),
+    F("vendor_account", "Cuenta AWS del proveedor"),
+])
+C("cicd", "CI/CD e IaC", "external", "CI", terraformable=False,
+  desc="Terraform Enterprise / Cloud, GitHub, GitLab, Jenkins, Gluon… que despliegan en AWS.", fields=[
+    F("product", "Producto", required=True, placeholder="Terraform Enterprise + GitHub + Gluon"),
+    sel("aws_auth", "Cómo se autentica en AWS", ["OIDC (rol sin llaves)", "Agente dentro de AWS con rol", "Usuario IAM con access keys"],
+        required=True),
+    ta("workspaces", "Workspaces por ambiente", placeholder="dev: cip-mx-dev\npre: cip-mx-pre\npro: cip-mx-pro"),
+    F("approvers", "Quién aprueba los planes", placeholder="Arquitectura + Seguridad"),
+    b("policy_as_code", "Policy as code (Sentinel / OPA / Checkov)"),
+])
+C("ext_storage", "Almacenamiento externo", "external", "BLOB", terraformable=False,
+  desc="Azure Blob, Google Cloud Storage, SFTP de terceros (p. ej. Adobe DLZ).", fields=[
+    sel("provider", "Proveedor", ["Azure Blob Storage", "Google Cloud Storage", "SFTP", "Otro"], required=True),
+    sel("auth", "Autenticación", ["SAS token / llave de larga duración", "Identidad federada / token temporal", "Usuario y contraseña"],
+        required=True),
+    b("secret_in_sm", "Credencial guardada en Secrets Manager"),
+    F("endpoint", "Endpoint / contenedor", placeholder="https://<cuenta>.blob.core.windows.net/dlz"),
+])
+C("ext_dataplatform", "Plataforma de datos externa", "external", "DATA", terraformable=False,
+  desc="Snowflake (Snowpipe / external stage), Adobe AEP, Databricks…", fields=[
+    F("product", "Producto", required=True, placeholder="Snowflake / Adobe AEP"),
+    sel("access", "Cómo accede a AWS", ["Rol IAM con ExternalId (storage integration)", "Credenciales en el destino", "Push desde AWS (API)",
+                                        "No accede a AWS"], required=True),
+    F("vendor_principal", "ARN / cuenta del proveedor", placeholder="arn:aws:iam::<cuenta>:user/<snowflake-user>"),
+])
+C("ext_source", "Sistema origen", "external", "SRC", terraformable=False,
+  desc="Sistema que produce los datos (p. ej. C360, core bancario, mainframe).", fields=[
+    sel("location", LOCATION, ["On-premise", "Internet / SaaS", "Otra cuenta AWS"], required=True),
+    F("protocol", "Protocolo / formato", placeholder="SFTP diario, CSV"),
+    F("frequency", "Frecuencia", placeholder="Diario 02:00"),
+])
+C("custom_ext", "Externo personalizado", "external", "EXT", terraformable=False,
+  desc="Cualquier otro sistema: pon su nombre, abreviatura y color.", fields=[
+    F("abbr", "Abreviatura en el icono", placeholder="CDO"),
+    sel("color", "Color", ZONE_COLORS, default="Gris"),
+    sel("behaves_as", "Para el Copilot se comporta como", ["Servicio por internet", "Sistema on-premise / red corporativa",
+                                                           "Sin red (sólo documentación)"], default="Servicio por internet"),
+])
 C("note", "Nota libre", "external", "📝", terraformable=False, desc="Etiqueta de texto en el lienzo.", fields=[])
 
 
@@ -983,7 +1087,7 @@ def missing_required(comp, config):
             if v is None and f.get("default") is None:
                 missing.append(f["label"])
             continue
-        if v is None or v == "" or v == []:
+        if v is None or v == "" or v == [] or (f.get("tri") and v not in ("Sí", "No")):
             missing.append(f["label"])
     return missing
 

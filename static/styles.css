@@ -268,3 +268,10 @@ img.icon { object-fit: contain; background: #fff; border-radius: 5px; padding: 1
 .icon-tile { fill: #fff; stroke: var(--border); }
 .icons-hint { display: grid; gap: 6px; border: 1px dashed var(--accent); border-radius: 8px; padding: 8px; margin-bottom: 10px; font-size: 12px; background: var(--panel-2); }
 .icons-hint span { color: var(--muted); }
+
+/* Flujos, nodos redimensionables */
+.fdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 2px; }
+.edge.dim { opacity: .15; }
+.node .nresize { opacity: 0; }
+.node:hover .nresize, .node.sel .nresize { opacity: 1; }
+.rules .rline input[data-plist], .rules .rline select[data-plist] { width: 100%; }

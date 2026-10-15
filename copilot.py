@@ -17,6 +17,7 @@ import re
 import unicodedata
 
 from catalog import COMPONENTS_BY_ID, effective_config, missing_required
+from extensions import EXTERNAL_TYPES, ExtensionChecks, tri_state
 from security import SecurityChecks
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -36,7 +37,7 @@ DATASTORES_IN_VPC = {"rds", "aurora", "elasticache", "redshift", "opensearch", "
 ASSOCIATION_TYPES = {"sg", "iam_role"}  # conexiones que asignan, no que transportan tráfico
 NETWORK_CONTROLS = {"sg", "nacl", "rtb"}
 EPHEMERAL_PORTS = (1024, 32768, 49152, 65535)
-EXTERNAL = {"users", "onprem", "saas"}
+EXTERNAL = EXTERNAL_TYPES
 POLLERS = {"sqs", "kinesis", "dynamodb", "msk"}  # fuentes que Lambda "lee" vía event source mapping
 ACCESS_LABEL = {"read": "lee de", "write": "escribe en", "readwrite": "lee y escribe en",
                 "invoke": "invoca a", "network": "envía tráfico a"}
@@ -52,7 +53,7 @@ def fid(*parts):
     return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12]
 
 
-class Analyzer(SecurityChecks):
+class Analyzer(SecurityChecks, ExtensionChecks):
     def __init__(self, project):
         self.p = project
         self.settings = project.get("settings") or {}
@@ -517,6 +518,8 @@ class Analyzer(SecurityChecks):
         """(servicio, rol, descripción) del rol que usa el componente para llamar a otros."""
         t = n["type"]
         c = self.cfg(n)
+        if t in EXTERNAL_TYPES:
+            return self.external_principal(n)
         role_nodes = self.neighbors(n, "iam_role")
         role_name = None
         if role_nodes:
@@ -544,7 +547,9 @@ class Analyzer(SecurityChecks):
             "kinesis": ("<consumidor>", "consumidor del stream"),
             "appflow": ("appflow.amazonaws.com", "rol del servicio de ingesta"),
         }
-        if t == "emr":
+        if t == "eventbridge" and c.get("scheduler"):
+            svc, d = "scheduler.amazonaws.com", "rol de ejecución de EventBridge Scheduler"
+        elif t == "emr":
             dep = c.get("deployment", "EMR Serverless")
             if dep == "EMR Serverless":
                 svc, d = "emr-serverless.amazonaws.com", "job runtime role de EMR Serverless"
@@ -787,6 +792,14 @@ class Analyzer(SecurityChecks):
 
         if "note" in (st_, tt):
             return plan
+        if {st_, tt} == {"vpce", "subnet"}:
+            ep, sn = (src, tgt) if st_ == "vpce" else (tgt, src)
+            plan["summary"] = f"Endpoint '{self.label(ep)}' desplegado también en '{self.label(sn)}'"
+            plan["notes"].append("Un endpoint de interfaz crea una ENI por subnet: así cubres varias AZ con un solo endpoint.")
+            if self.vpc_of(ep) and self.vpc_of(sn) and self.vpc_of(ep)["id"] != self.vpc_of(sn)["id"]:
+                self.add("high", "Red", "VPCE-OTHER-VPC", f"'{self.label(ep)}' asociado a una subnet de otra VPC",
+                         "Un endpoint sólo puede desplegarse en subnets de su VPC.", "Corrige la asociación.", [ep, sn], [e])
+            return plan
         if "sg" in (st_, tt):
             sgn = src if st_ == "sg" else tgt
             other = tgt if sgn is src else src
@@ -879,7 +892,7 @@ class Analyzer(SecurityChecks):
             plan["notes"].append("EventBridge necesita un rol (events.amazonaws.com) para este tipo de target.")
         elif st_ == "sns" and tt == "firehose":
             plan["notes"].append("La suscripción SNS → Firehose requiere un subscription role con firehose:PutRecord*.")
-        elif st_ in EXTERNAL or st_ == "users":
+        elif st_ in EXTERNAL and not self.external_principal(src):
             principal_node = None
         elif st_ in ("alb", "nlb", "cloudfront", "route53", "waf", "vpce", "igw", "nat", "tgw", "peering", "vpn",
                      "netfw", "dnsfw", "acm", "cognito", "s3", "dynamodb", "sqs", "sns", "kinesis", "msk", "rds", "aurora",
@@ -1009,7 +1022,7 @@ class Analyzer(SecurityChecks):
                          "o URLs prefirmadas.", [tgt], [e])
             return
 
-        if st_ == "onprem":
+        if self.ext_kind(src) == "corp" and st_ not in ("corp_proxy", "corp_firewall"):
             conn = self.cfg(src).get("connectivity", "Por definir")
             if tgt_in:
                 has_link = bool(self.of_type("vpn", "dx")) or conn in ("Site-to-Site VPN", "Direct Connect")
@@ -1044,9 +1057,31 @@ class Analyzer(SecurityChecks):
 
         # Recurso en VPC hablando con servicios regionales
         if src_in and (self.comp(tgt)["vpc"] == "never" or (self.comp(tgt)["vpc"] == "optional" and not tgt_in)):
+            kind = self.ext_kind(tgt)
+            if kind in ("none", "aws"):
+                plan["notes"].append("Sistema documentado sin requisitos de red en AWS." if kind == "none"
+                                     else "Otra cuenta AWS: revisa la conexión entre cuentas (rol o política de recurso).")
+                return
+            if kind == "corp":
+                if self.has_private_path():
+                    plan["path"].append("✔ Ruta privada hacia la red corporativa (TGW / VPN / Direct Connect).")
+                else:
+                    self.add("high", "Red", "NET-NO-CORP-PATH", f"'{self.label(src)}' no tiene ruta a '{self.label(tgt)}'",
+                             f"{self.label(tgt)} está en la red corporativa y no hay TGW, VPN ni Direct Connect.",
+                             "Agrega la conectividad híbrida (TGW + VPN/DX) y las rutas hacia el CIDR corporativo.",
+                             [src, tgt], [e])
+                    plan["path"].append("✖ Sin conectividad privada hacia la red corporativa.")
+                if tt in ("corp_proxy", "corp_firewall"):
+                    plan["notes"].append("✔ La salida pasa por el proxy/firewall corporativo: cuenta como salida filtrada.")
+                plan["network"].append({"sg": self.sg(src), "direction": "egress", "protocol": proto, "port": port_s,
+                                        "peer": self.cfg(tgt).get("cidr") or "<CIDR corporativo>", "peer_kind": "cidr",
+                                        "description": f"Hacia {self.label(tgt)} (red corporativa)"})
+                return
             if tt in EXTERNAL:
                 why = f"se conecta a '{self.label(tgt)}' (internet)"
                 plan["path"] += self.egress_requirements(src, None, why, e)
+                if self.egress_filtered(src):
+                    plan["path"].append("✔ Salida filtrada (proxy/firewall corporativo o inspección centralizada).")
                 if tt == "saas" and self.cfg(tgt).get("ip_allowlist"):
                     plan["notes"].append("El tercero exige IP fija: la IP de salida es la Elastic IP del NAT Gateway.")
                 plan["network"].append({"sg": self.sg(src), "direction": "egress", "protocol": "tcp", "port": port_s or "443",
@@ -1508,7 +1543,7 @@ class Analyzer(SecurityChecks):
                          "Health check tipo ELB requiere target group.", "Conecta un ALB/NLB o usa health check EC2.", [n])
 
         # CloudTrail / CloudWatch / detección
-        if self.nodes and not self.of_type("cloudtrail") and not any(self.cfg(a).get("cloudtrail") for a in self.of_type("account")):
+        if self.nodes and not self.of_type("cloudtrail") and not any(tri_state(self.cfg(a).get("cloudtrail")) == "yes" for a in self.of_type("account")):
             self.add("info", "Seguridad", "GOV-CLOUDTRAIL", "No hay CloudTrail en el diagrama",
                      "Auditoría de API (quién hizo qué).", "Confirma que existe un trail organizacional (o agrégalo).", [])
         if self.of_type(*COMPUTE, "emr", "glue") and not self.of_type("cloudwatch"):
@@ -1527,12 +1562,14 @@ class Analyzer(SecurityChecks):
             self.add("info", "Seguridad", "SEC-SHIELD", "Evalúa Shield Advanced",
                      "Hay entradas públicas en producción; Shield Standard (incluido) cubre capas 3/4 básicas.",
                      "Si el negocio es crítico, Shield Advanced añade protección L7, SRT y protección de costos.", public_entries)
-        egress_internet = [e for e in self.edges if self.nodes[e["target"]]["type"] in ("saas", "users")
-                           and self.in_vpc(self.nodes[e["source"]])]
-        if egress_internet and not self.of_type("netfw", "dnsfw"):
+        egress_internet = [e for e in self.edges if self.in_vpc(self.nodes[e["source"]])
+                           and (self.ext_kind(self.nodes[e["target"]]) == "internet" or self.nodes[e["target"]]["type"] == "users")
+                           and not self.egress_filtered(self.nodes[e["source"]])]
+        if egress_internet:
             self.add("low", "Seguridad", "SEC-EGRESS-FILTER", "Salida a internet sin filtrado",
                      "Hay componentes en VPC que salen a internet sin control de dominios.",
-                     "Considera AWS Network Firewall (allowlist de dominios) o Route 53 DNS Firewall.",
+                     "Usa AWS Network Firewall / DNS Firewall, o declara la salida corporativa (TGW con inspección, "
+                     "proxy o firewall corporativo).",
                      [self.nodes[e["source"]] for e in egress_internet])
 
     def edges_of(self, n):
@@ -1554,6 +1591,13 @@ class Analyzer(SecurityChecks):
                      f"Agrega VPC endpoints ({', '.join(missing)}) o un NAT Gateway.", [n, v])
         elif "s3" in missing:
             self._gw_hint(v, "s3", n)
+
+    def interface_services(self, v):
+        out = set()
+        for ep in self.children(v, "vpce") if v else []:
+            if self.cfg(ep).get("endpoint_type") == "Interface":
+                out.update(self.cfg(ep).get("services") or [])
+        return out
 
     def has_egress(self, n):
         """¿El componente tiene salida a internet (NAT/IGW/TGW)? Usa la tabla de rutas si está dibujada."""
@@ -1635,7 +1679,8 @@ class Analyzer(SecurityChecks):
             for svc in services:
                 if svc not in endpoints:
                     needed.append(svc)
-                elif svc in GATEWAY_ENDPOINT_SERVICES and self.route_for(rtb, f"pl-{svc}") is None:
+                elif svc in GATEWAY_ENDPOINT_SERVICES and svc not in self.interface_services(v) \
+                        and self.route_for(rtb, f"pl-{svc}") is None:
                     self.add("medium", "Red", "RTB-GW-ASSOC", f"Gateway endpoint de {svc} sin asociar a '{self.label(rtb)}'",
                              f"Existe el endpoint de {svc}, pero la tabla de rutas de '{self.label(self.subnet_of(src))}' "
                              f"no tiene la ruta pl-{svc} → vpce, así que el tráfico de '{self.label(src)}' no lo usa.",
@@ -1740,7 +1785,7 @@ class Analyzer(SecurityChecks):
     def nacl_allows(self, nacl, direction, proto, port, peer):
         """Evalúa una NACL (stateless, primera regla que coincide gana, deny implícito)."""
         c = self.cfg(nacl)
-        if str(c.get("kind", "")).startswith("Default"):
+        if str(c.get("kind", "")).startswith("Default") or self._nacl_pending(nacl):
             return True, None
         rows = [r for r in c.get("rules") or [] if (r.get("direction") or "ingress") == direction]
         rows.sort(key=lambda r: self._int(r.get("rule_no")) if self._int(r.get("rule_no")) is not None else 32766)
@@ -1771,7 +1816,7 @@ class Analyzer(SecurityChecks):
         for n in self.of_type("nacl"):
             c = self.cfg(n)
             rows = c.get("rules") or []
-            if not str(c.get("kind", "")).startswith("Default") and not rows and self.vpc_of(n):
+            if not str(c.get("kind", "")).startswith("Default") and not self._nacl_pending(n) and not rows and self.vpc_of(n):
                 self.add("high", "Red", "NACL-EMPTY", f"NACL personalizada '{self.label(n)}' sin reglas",
                          "Una NACL personalizada sin reglas bloquea todo el tráfico de sus subnets.",
                          "Agrega reglas de entrada/salida (incluye puertos efímeros 1024-65535 para respuestas).", [n])
@@ -1797,7 +1842,7 @@ class Analyzer(SecurityChecks):
 
         for e in self.edges:
             src, tgt = self.nodes[e["source"]], self.nodes[e["target"]]
-            if ASSOCIATION_TYPES & {src["type"], tgt["type"]} or "note" in (src["type"], tgt["type"]):
+            if self.is_association(src, tgt) or "note" in (src["type"], tgt["type"]):
                 continue
             plan = plans.get(e["id"]) or {}
             if not plan.get("network") and not plan.get("path"):
@@ -1955,7 +2000,7 @@ class Analyzer(SecurityChecks):
         for e in self.edges:
             if not e.get("access"):
                 s, t = self.nodes[e["source"]], self.nodes[e["target"]]
-                if "note" in (s["type"], t["type"]) or ASSOCIATION_TYPES & {s["type"], t["type"]} or t["type"] == "kms":
+                if "note" in (s["type"], t["type"]) or self.is_association(s, t) or t["type"] == "kms":
                     continue
                 self.add("info", "Seguimiento", "TRK-EDGE-ACCESS", f"Conexión sin tipo de acceso: {self.label(s)} → {self.label(t)}",
                          f"Se asumió '{self.access(e)}'.", "Define lectura/escritura/invocación para generar permisos de mínimo privilegio.",
@@ -1972,7 +2017,8 @@ class Analyzer(SecurityChecks):
             node = self.nodes[pr["node_id"]]
             r = roles.setdefault(pr["node_id"], {
                 "node_id": pr["node_id"], "component": self.label(node), "role": pr["role"], "service": pr["service"],
-                "desc": pr["desc"], "explicit": pr["explicit"], "statements": [], "edges": []})
+                "desc": pr["desc"], "explicit": pr["explicit"], "statements": [], "edges": [],
+                "trust_override": pr.get("trust_override")})
             r["edges"].append(p["edge_id"])
             target = self.label(self.nodes[p["target"] if p["source"] == pr["node_id"] else p["source"]])
             for s in p["identity"]:
@@ -1993,7 +2039,9 @@ class Analyzer(SecurityChecks):
                 r["managed"] = ["arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"]
             r["policy"] = {"Version": "2012-10-17", "Statement": r["statements"]}
             svc = r["service"]
-            if svc.endswith("amazonaws.com"):
+            if r.get("trust_override"):
+                r["trust"] = r["trust_override"]
+            elif svc.endswith("amazonaws.com"):
                 actions = ["sts:AssumeRole", "sts:TagSession"] if svc == "pods.eks.amazonaws.com" else "sts:AssumeRole"
                 r["trust"] = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": svc},
                                                                       "Action": actions}]}
@@ -2120,6 +2168,8 @@ class Analyzer(SecurityChecks):
         self.check_policies()
         self.check_security_pack()
         self.check_enduser()
+        self.check_externals()
+        self.check_tags()
         pending = self.check_tracking()
         roles = self.consolidate_roles(plans)
         sgs = self.consolidate_sgs(plans)
@@ -2149,6 +2199,7 @@ class Analyzer(SecurityChecks):
         return {
             "findings": uniq, "plans": plans, "roles": roles, "security_groups": sgs,
             "sg_suggestions": sg_suggestions, "summary": self.summary(pending), "posture": posture,
+            "tags": self.tags_terraform(),
             "node_severity": node_sev, "parents": self.parent,
         }
 

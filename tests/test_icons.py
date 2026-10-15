@@ -15,7 +15,7 @@ SVG = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 class IconsTest(unittest.TestCase):
     def test_every_component_has_icon_except_note(self):
-        ids = {c["id"] for c in COMPONENTS} - {"note", "subnet"}
+        ids = {c["id"] for c in COMPONENTS} - {"note", "subnet", "zone"}
         self.assertEqual(sorted(ids - set(icons.ICON_MAP)), [])
 
     def test_setup_from_zip(self):
@@ -36,6 +36,7 @@ class IconsTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, "ec2.svg")))
             self.assertFalse(os.path.exists(os.path.join(base, "..", "evil")))
             self.assertIn("s3", icons.available(base)["available"])
+            self.assertFalse(icons.available(base)["outdated"])
 
     def test_invalid_zip(self):
         with tempfile.TemporaryDirectory() as base:

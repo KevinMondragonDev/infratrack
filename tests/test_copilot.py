@@ -215,10 +215,11 @@ class SecurityTest(unittest.TestCase):
         ]
 
     def test_account_baseline_and_posture(self):
-        nodes = self.two_accounts({"root_mfa": False})
+        nodes = self.two_accounts({"root_mfa": "No"})
         a = analyze({"nodes": nodes, "edges": []})
         r = rules(a)
         self.assertIn("ACC-ROOT-MFA", r)
+        self.assertIn("ACC-UNCONFIRMED", r)
         self.assertIn("ORG-MISSING", r)
         self.assertIn("ORG-LZ", r)
         ctrl = {c["id"]: c for d in a["posture"]["domains"] for c in d["controls"]}
@@ -274,6 +275,111 @@ class SecurityTest(unittest.TestCase):
         r = rules(analyze({"nodes": nodes, "edges": []}))
         for rule in ("WS-ENC", "WS-MFA", "WS-IP", "WS-DLP", "WS-NO-DIR", "DIR-CONNECTOR", "HA-MULTI-AZ-REQ"):
             self.assertIn(rule, r)
+
+
+class RequirementsCipTest(unittest.TestCase):
+    """Requerimientos de diagramación (zonas, externos, ruido del Copilot, tags, flujos)."""
+
+    def vpc(self, extra=None):
+        nodes = [
+            N("vpc", "vpc", 0, 0, 1200, 700, cidr="10.0.0.0/16"),
+            N("a", "subnet", 20, 50, 350, 600, tier="private", cidr="10.0.1.0/24", az="a"),
+            N("b", "subnet", 400, 50, 350, 600, tier="private", cidr="10.0.2.0/24", az="b"),
+            N("c", "subnet", 780, 50, 350, 600, tier="private", cidr="10.0.3.0/24", az="c"),
+            N("fn", "lambda", 40, 100),
+        ]
+        return nodes + (extra or [])
+
+    def test_unconfirmed_baseline_is_not_failure(self):
+        a = analyze({"nodes": [N("acct", "account", 0, 0, 500, 500, account_id="111111111111", environment="dev")],
+                     "edges": []})
+        r = rules(a)
+        self.assertNotIn("ACC-ROOT-MFA", r)
+        self.assertIn("ACC-UNCONFIRMED", r)
+        ctrl = {c["id"]: c for d in a["posture"]["domains"] for c in d["controls"]}
+        self.assertEqual(ctrl["IAM-ROOT-MFA"]["status"], "unknown")
+        self.assertIn("Sin confirmar", ctrl["IAM-ROOT-MFA"]["hint"])
+
+    def test_zone_is_transparent(self):
+        nodes = [N("z", "zone", -50, -50, 1400, 900)] + self.vpc([N("b1", "s3", 1300, 100)])
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b1", "read")]})
+        self.assertEqual(a["parents"]["vpc"], "z")
+        self.assertIn("NET-NEEDS-ENDPOINT", rules(a))  # la VPC se sigue resolviendo a través de la zona
+        self.assertNotIn("NET-REGIONAL-IN-VPC", rules(a))
+
+    def test_corporate_egress_counts_as_filtered(self):
+        nodes = self.vpc([N("tgw", "tgw", 1300, 300, egress_inspection="Proxy / firewall corporativo"),
+                          N("px", "corp_proxy", 1500, 300, location="On-premise (vía TGW/VPN/DX)"),
+                          N("rt", "rtb", 60, 300, routes=[{"destination": "0.0.0.0/0", "target_type": "tgw"}]),
+                          N("api", "ext_dataplatform", 1700, 100, product="Adobe AEP", access="Push desde AWS (API)")])
+        a = analyze({"nodes": nodes, "edges": [E("e1", "fn", "api", "write"), E("e2", "fn", "px", "network")]})
+        r = rules(a)
+        self.assertNotIn("SEC-EGRESS-FILTER", r)
+        self.assertNotIn("NET-NO-CORP-PATH", r)
+        self.assertTrue(any("filtrada" in x for x in a["plans"]["e1"]["path"]))
+
+    def test_unfiltered_egress_still_reported(self):
+        nodes = self.vpc([N("nat", "nat", 900, 100), N("api", "saas", 1700, 100)])
+        self.assertIn("SEC-EGRESS-FILTER", rules(analyze({"nodes": nodes, "edges": [E("e", "fn", "api", "write")]})))
+
+    def test_corporate_system_needs_private_path(self):
+        nodes = self.vpc([N("src", "ext_source", 1700, 100, location="On-premise")])
+        self.assertIn("NET-NO-CORP-PATH", rules(analyze({"nodes": nodes, "edges": [E("e", "fn", "src", "read")]})))
+
+    def test_external_assumers(self):
+        nodes = [N("wiz", "secops", 0, 0, product="Wiz", integration="Rol cross-account de sólo lectura", external_id="No",
+                   vendor_account="999999999999"),
+                 N("tfe", "cicd", 0, 200, product="Terraform Enterprise", aws_auth="Usuario IAM con access keys"),
+                 N("snow", "ext_dataplatform", 0, 400, product="Snowflake", access="Rol IAM con ExternalId (storage integration)"),
+                 N("b", "s3", 400, 400)]
+        a = analyze({"nodes": nodes, "edges": [E("e", "snow", "b", "read")]})
+        r = rules(a)
+        self.assertIn("EXT-NO-EXTERNALID", r)
+        self.assertIn("EXT-CICD-KEYS", r)
+        role = next(x for x in a["roles"] if x["node_id"] == "snow")
+        cond = role["trust"]["Statement"][0]["Condition"]["StringEquals"]
+        self.assertIn("sts:ExternalId", cond)
+
+    def test_nacl_pending_is_not_noise(self):
+        nodes = self.vpc([N("db", "rds", 420, 100, engine="PostgreSQL"),
+                          N("acl", "nacl", 450, 400, kind="Pendiente de definición (no evaluar)")])
+        r = rules(analyze({"nodes": nodes, "edges": [E("e", "fn", "db", "network")]}))
+        self.assertNotIn("NACL-BLOCK", r)
+        self.assertNotIn("NACL-EMPTY", r)
+        self.assertIn("NACL-PENDING", r)
+
+    def test_interface_s3_endpoint_needs_no_gateway_route(self):
+        nodes = self.vpc([N("ep", "vpce", 60, 200, endpoint_type="Interface", services=["s3"]),
+                          N("rt", "rtb", 60, 300, routes=[{"destination": "0.0.0.0/0", "target_type": "tgw"}]),
+                          N("b1", "s3", 1300, 100)])
+        a = analyze({"nodes": nodes, "edges": [E("e", "fn", "b1", "read")]})
+        self.assertNotIn("RTB-GW-ASSOC", rules(a))
+
+    def test_vpce_in_several_subnets(self):
+        nodes = self.vpc([N("ep", "vpce", 60, 200, endpoint_type="Interface", services=["sqs"])])
+        self.assertIn("VPCE-SINGLE-AZ", rules(analyze({"nodes": nodes, "edges": []})))
+        a = analyze({"nodes": nodes, "edges": [E("x1", "ep", "b"), E("x2", "ep", "c")]})
+        self.assertNotIn("VPCE-SINGLE-AZ", rules(a))
+        self.assertIn("desplegado", a["plans"]["x1"]["summary"])
+
+    def test_scheduler_principal(self):
+        a = analyze({"nodes": [N("sch", "eventbridge", 0, 0, scheduler=True), N("fn", "lambda", 300, 0),
+                               N("sf", "stepfn", 300, 200)],
+                     "edges": [E("e", "sch", "sf", "invoke")]})
+        self.assertEqual(a["plans"]["e"]["principal"]["service"], "scheduler.amazonaws.com")
+        self.assertIn("SCHED-DLQ", rules(a))
+
+    def test_governance_tags(self):
+        req = ["CostCenter", "Environment", "Project"]
+        nodes = [N("b1", "s3", 0, 0), N("b2", "s3", 0, 100)]
+        nodes[1]["tags"] = "Project=cip"
+        p = {"settings": {"required_tags": req, "tags": [{"key": "CostCenter", "value": "CC-1"}]}, "nodes": nodes, "edges": []}
+        a = analyze(p)
+        self.assertEqual(sum(1 for f in a["findings"] if f["rule"] == "TAG-MISSING"), 2)
+        self.assertIn('CostCenter  = "CC-1"', a["tags"]["providers"])
+        self.assertIn('Environment = "<definir>"', a["tags"]["providers"])
+        p["settings"]["tags"] += [{"key": "Environment", "value": "dev"}, {"key": "Project", "value": "cip"}]
+        self.assertNotIn("TAG-MISSING", rules(analyze(p)))
 
 if __name__ == "__main__":
     unittest.main()

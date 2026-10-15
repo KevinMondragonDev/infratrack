@@ -46,7 +46,7 @@ ICON_MAP = {
     "dx": "Arch_AWS-Direct-Connect_64.svg",
     "globalaccel": "Arch_AWS-Global-Accelerator_64.svg",
     "shield": "Arch_AWS-Shield_64.svg",
-    "sg": "Res_Firewall_48_Light.svg",
+    "sg": "Res_Shield_48_Light.svg",
     "nacl": "Res_Amazon-VPC_Network-Access-Control-List_48.svg",
     "rtb": "Res_Amazon-VPC_Router_48.svg",
     # cómputo
@@ -106,6 +106,16 @@ ICON_MAP = {
     # externos
     "users": "Res_Users_48_Light.svg",
     "saas": "Res_Internet_48_Light.svg",
+    "idp": "Res_SAML-token_48_Light.svg",
+    "corp_proxy": "Res_SSL-padlock_48_Light.svg",
+    "corp_firewall": "Res_Firewall_48_Light.svg",
+    "secops": "Res_Magnifying-Glass_48_Light.svg",
+    "observability": "Res_Metrics_48_Light.svg",
+    "cicd": "Res_Git-Repository_48_Light.svg",
+    "ext_storage": "Res_Folders_48_Light.svg",
+    "ext_dataplatform": "Res_Data-Table_48_Light.svg",
+    "ext_source": "Res_Database_48_Light.svg",
+    "custom_ext": "Res_Generic-Application_48_Light.svg",
 }
 
 UNSAFE_SVG = re.compile(rb"<script|<foreignObject|\son[a-z]+\s*=|javascript:", re.IGNORECASE)
@@ -120,13 +130,17 @@ def available(base):
     if not os.path.isdir(d):
         return {"available": [], "version": None}
     ids = sorted(f[:-4] for f in os.listdir(d) if f.endswith(".svg"))
-    version = None
+    version, checked = None, set(ids)
     try:
         with open(os.path.join(d, "manifest.json"), encoding="utf-8") as fh:
-            version = json.load(fh).get("version")
+            manifest = json.load(fh)
+        version = manifest.get("version")
+        checked |= set(manifest.get("missing") or [])
     except (OSError, ValueError):
         pass
-    return {"available": ids, "version": version}
+    # Hay componentes nuevos en el mapa que no se buscaron en la última instalación
+    outdated = bool(ids) and any(k not in checked for k in ICON_MAP)
+    return {"available": ids, "version": version, "outdated": outdated}
 
 
 def _download(url, dest, log):
