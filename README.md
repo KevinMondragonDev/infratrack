@@ -178,7 +178,28 @@ vez, la app detecta el conflicto y te deja recargar o sobrescribir.
 python3 -m unittest discover -s tests -v
 ```
 
-GitHub Actions las corre en Linux (Python 3.9, 3.11, 3.13), Windows y macOS en cada push, en cada PR y cada noche.
+GitHub Actions las corre en Linux (Python 3.9, 3.11, 3.13), Windows y macOS en cada push, en cada PR y cada noche,
+junto con las pruebas de interfaz (Playwright) y SonarCloud.
+
+**Demo pública**: https://infratrack-brown.vercel.app (los proyectos se guardan sólo en tu navegador).
+
+## Desarrollo
+
+- Backend: Python sólo con librería estándar (`app.py`, `copilot.py`, `security.py`, `extensions.py`, `catalog.py`…).
+- Frontend: módulos ES nativos en `static/js/` (sin build): `main.js` arranca la app; `canvas.js`, `interaction.js`,
+  `inspector-*.js`, `copilot-modal.js`, `glue-catalog.js`, `storage.js` (servidor o navegador), etc.
+- `node scripts/check-modules.mjs` verifica que todos los módulos enlacen.
+- Pruebas de interfaz con Playwright:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install playwright && .venv/bin/python -m playwright install chromium
+.venv/bin/python -m unittest tests.ui.test_ui -v
+```
+
+## Licencia
+
+Código bajo licencia [MIT](LICENSE). Los iconos de `static/icons/aws/` son de AWS y se rigen por sus términos
+(ver [static/icons/aws/NOTICE.md](static/icons/aws/NOTICE.md)).
 
 ## Extender
 

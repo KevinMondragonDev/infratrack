@@ -8,7 +8,6 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,7 +20,7 @@ class ServerTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         app.STORE = Store(cls.tmp.name)
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.srv = app.Server(("127.0.0.1", 0), app.Handler)
         cls.base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
@@ -111,7 +110,7 @@ class DemoModeTest(unittest.TestCase):
     def setUpClass(cls):
         cls.prev = app.DEMO
         app.DEMO = True
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.srv = app.Server(("127.0.0.1", 0), app.Handler)
         cls.base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
