@@ -13,6 +13,12 @@ export async function api(method, url, body) {
   return data;
 }
 
+/* Muestra un error de una acción asíncrona (para promesas que no se esperan). */
+export function reportError(e) {
+  console.error(e);
+  toast(e?.message || String(e), 6000);
+}
+
 export function toast(msg, ms = 2600) {
   const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), ms);

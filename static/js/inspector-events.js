@@ -1,5 +1,5 @@
 /* InfraTrack — inspector-events */
-import { copy, toast } from './api.js';
+import { copy, reportError, toast } from './api.js';
 import { renderFlowFilter } from './canvas.js';
 import { askAI, openCopilot } from './copilot-modal.js';
 import { $, $$, COLOR_NAMES, S, lsSet, nowIso, uid } from './core.js';
@@ -101,12 +101,12 @@ export function onInspectorClick(ev) {
   const e = S.sel && S.sel.kind === 'edge' ? edgeById(S.sel.id) : null;
   if (t.dataset.tab) { S.tab = t.dataset.tab; renderInspector(); return; }
   if (t.dataset.openSecurity) { openCopilot('security'); return; }
-  if (t.dataset.copy !== undefined) { copy(t.dataset.copy); return; }
+  if (t.dataset.copy !== undefined) { copy(t.dataset.copy).catch(reportError); return; }
   if (t.dataset.goto) { const g = nodeById(t.dataset.goto); if (g) { select('node', g.id, 'general'); centerOn(g); } return; }
   if (t.dataset.seledge) { select('edge', t.dataset.seledge); return; }
   if (t.dataset.dismiss) { dismissFinding(t.dataset.dismiss); return; }
   if (t.dataset.undismiss) { undismissFinding(t.dataset.undismiss); return; }
-  if (t.dataset.aifocus) { askAI(null, t.dataset.aifocus, $('#aiNodeOut')); return; }
+  if (t.dataset.aifocus) { askAI(null, t.dataset.aifocus, $('#aiNodeOut')).catch(reportError); return; }
   if (t.dataset.catact) { onCatalogAction(t, n); return; }
   if (t.dataset.padd || t.dataset.pdel) {
     snapshot(); P().settings = P().settings || {};

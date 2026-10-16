@@ -6,7 +6,7 @@ import { nodeById, redo, undo } from './model.js';
 export const $ = (s, el = document) => el.querySelector(s);
 export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const uid = (p = 'n') => p + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 7);
+export const uid = (p = 'n') => p + Date.now().toString(36).slice(-4) + crypto.getRandomValues(new Uint32Array(1))[0].toString(36).slice(0, 5);
 export const nowIso = () => new Date().toISOString();
 export const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
 export const snap = (v, g = 10) => Math.round(v / g) * g;

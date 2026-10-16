@@ -1,5 +1,5 @@
 /* InfraTrack — main */
-import { api, toast } from './api.js';
+import { api, reportError, toast } from './api.js';
 import { renderCanvas } from './canvas.js';
 import { closeModal, onModalChange, onModalClick, openCopilot } from './copilot-modal.js';
 import { $, S, SEVS } from './core.js';
@@ -76,19 +76,19 @@ export function bind() {
     if (body && t && !body.innerHTML) body.innerHTML = catTableBody(t, Number(d.dataset.di), Number(d.dataset.ti));
   }, true);
 
-  $('#projectSelect').onchange = (e) => openProject(e.target.value);
-  $('#btnNew').onclick = () => newProject(false);
+  $('#projectSelect').onchange = (e) => { openProject(e.target.value).catch(reportError); };
+  $('#btnNew').onclick = () => { newProject(false).catch(reportError); };
   $('#btnMenu').onclick = (ev) => { ev.stopPropagation(); $('#menu').classList.toggle('hidden'); };
   document.addEventListener('click', (ev) => { if (!ev.target.closest('.menu-wrap')) $('#menu').classList.add('hidden'); });
-  $('#menu').addEventListener('click', (ev) => { const b = ev.target.closest('[data-act]'); if (b) onMenu(b.dataset.act); });
+  $('#menu').addEventListener('click', (ev) => { const b = ev.target.closest('[data-act]'); if (b) onMenu(b.dataset.act).catch(reportError); });
   $('#btnCopilot').onclick = () => { S.sevFilter = new Set(SEVS); openCopilot(); };
   S.mtab = 'security';
   $('#modalClose').onclick = closeModal;
   $('#modal').addEventListener('click', (ev) => { if (ev.target.id === 'modal') closeModal(); });
   $('#modalBody').addEventListener('click', onModalClick);
   $('#modalBody').addEventListener('change', onModalChange);
-  $('#btnReload').onclick = () => { $('#conflict').classList.add('hidden'); openProject(P().id); };
-  $('#btnForce').onclick = () => save(true);
+  $('#btnReload').onclick = () => { $('#conflict').classList.add('hidden'); openProject(P().id).catch(reportError); };
+  $('#btnForce').onclick = () => { save(true).catch(reportError); };
   $('#fileImport').onchange = async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
     try { const data = JSON.parse(await f.text()); const p = await store.importProject(data); await loadProjects(p.id); toast('Proyecto importado'); }
@@ -106,7 +106,7 @@ export function bind() {
     else if (mod && ev.key.toLowerCase() === 'd') { ev.preventDefault(); if (S.sel && S.sel.kind === 'node') duplicateNode(nodeById(S.sel.id)); }
     else if ((ev.key === 'Delete' || ev.key === 'Backspace') && S.sel && !S.modal) { ev.preventDefault(); deleteSelection(); }
   });
-  window.addEventListener('beforeunload', (ev) => { if (S.saveT || S.saving) { save(); ev.preventDefault(); ev.returnValue = ''; } });
+  window.addEventListener('beforeunload', (ev) => { if (S.saveT || S.saving) { save().catch(reportError); ev.preventDefault(); ev.returnValue = ''; } });
   window.addEventListener('resize', () => applyView());
 }
 

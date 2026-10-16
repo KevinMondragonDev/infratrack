@@ -48,7 +48,7 @@ jobs:
           python-version: "3.13"
       - name: Instalar Playwright y Chromium
         run: |
-          python -m pip install playwright
+          python -m pip install --only-binary :all: --no-deps -r requirements-ui.txt
           python -m playwright install --with-deps chromium
       - name: Pruebas de interfaz
         run: python -m unittest tests.ui.test_ui -v

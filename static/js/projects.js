@@ -41,7 +41,7 @@ export async function openProject(id) {
   const v = lsGet(`it.view.${id}`, null);
   if (v) { S.view = v; applyView(); } else fitView();
   renderCanvas(); renderInspector(); updateProgress(); setSaveStatus('Guardado ✓');
-  analyzeNow();
+  await analyzeNow();
 }
 
 export async function newProject(sample = false) {

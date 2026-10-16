@@ -1,5 +1,5 @@
 /* InfraTrack — copilot-modal */
-import { api, copy } from './api.js';
+import { api, copy, reportError } from './api.js';
 import { $, ACCESS_SHORT, S, SEVS, SEV_LABEL, esc } from './core.js';
 import { sgTable } from './inspector-analysis.js';
 import { codeBlock, findingHtml } from './inspector-common.js';
@@ -30,7 +30,7 @@ export function renderCopilotTab() {
   else if (S.mtab === 'security') c = securityHtml(A);
   else if (S.mtab === 'tags') c = tagsHtml(A);
   else if (S.mtab === 'findings') {
-    const cats = [...new Set(A.findings.map((f) => f.category))].sort();
+    const cats = [...new Set(A.findings.map((f) => f.category))].sort((a, b) => a.localeCompare(b));
     const list = A.findings.filter((f) => S.sevFilter.has(f.severity) && (!S.catFilter || f.category === S.catFilter) && (S.showDismissed || !f.dismissed));
     c = `<div class="filters">${SEVS.map((k) => `<span class="chip sev-${k} ${S.sevFilter.has(k) ? '' : 'off'}" data-sevtoggle="${k}">${SEV_LABEL[k]} ${A.findings.filter((f) => f.severity === k && !f.dismissed).length}</span>`).join('')}
       <select id="catFilter" class="btn sm"><option value="">Todas las categorías</option>${cats.map((x) => `<option ${x === S.catFilter ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
@@ -131,13 +131,13 @@ export function onModalClick(ev) {
   if (!t) return;
   if (t.dataset.mtabbtn) { S.mtab = t.dataset.mtabbtn; renderCopilotTab(); return; }
   if (t.dataset.sevtoggle) { const k = t.dataset.sevtoggle; S.sevFilter.has(k) ? S.sevFilter.delete(k) : S.sevFilter.add(k); renderCopilotTab(); return; }
-  if (t.dataset.copy !== undefined) { copy(t.dataset.copy); return; }
+  if (t.dataset.copy !== undefined) { copy(t.dataset.copy).catch(reportError); return; }
   if (t.dataset.goto) { const n = nodeById(t.dataset.goto); closeModal(); if (n) { select('node', n.id, t.dataset.gotab || 'copilot'); centerOn(n); } return; }
   if (t.dataset.seledge) { closeModal(); select('edge', t.dataset.seledge); return; }
   if (t.dataset.dismiss) { dismissFinding(t.dataset.dismiss); return; }
   if (t.dataset.undismiss) { undismissFinding(t.dataset.undismiss); return; }
-  if (t.dataset.ai) { const q = t.dataset.ai === 'ask' ? $('#aiQuestion').value.trim() : null; if (t.dataset.ai === 'ask' && !q) return; askAI(q, null, $('#aiOut')); return; }
-  if (t.dataset.restore) { restoreBackup(t.dataset.restore); }
+  if (t.dataset.ai) { const q = t.dataset.ai === 'ask' ? $('#aiQuestion').value.trim() : null; if (t.dataset.ai === 'ask' && !q) return; askAI(q, null, $('#aiOut')).catch(reportError); return; }
+  if (t.dataset.restore) { restoreBackup(t.dataset.restore).catch(reportError); }
 }
 export function onModalChange(ev) {
   const t = ev.target;

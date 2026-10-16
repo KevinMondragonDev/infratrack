@@ -25,7 +25,7 @@ export async function onMenu(act) {
     await flushSave();
     await store.download(p, act === 'export-md' ? 'md' : 'json');
   } else if (act === 'import') $('#fileImport').click();
-  else if (act === 'sample') newProject(true);
+  else if (act === 'sample') await newProject(true);
   else if (act === 'backups') {
     await flushSave();
     const list = await store.backups(p.id);

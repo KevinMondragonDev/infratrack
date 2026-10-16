@@ -1,5 +1,5 @@
 /* InfraTrack — persistence */
-import { api, toast } from './api.js';
+import { api, reportError, toast } from './api.js';
 import { renderCanvas, renderFlowFilter } from './canvas.js';
 import { renderCopilotTab } from './copilot-modal.js';
 import { $, S } from './core.js';
@@ -11,7 +11,7 @@ import { store } from './storage.js';
 
 /* ───────────────────────── Guardado y análisis ───────────────────────── */
 export function setSaveStatus(t) { $('#saveStatus').textContent = t; }
-export function scheduleSave() { setSaveStatus('Sin guardar…'); clearTimeout(S.saveT); S.saveT = setTimeout(() => save(), 700); }
+export function scheduleSave() { setSaveStatus('Sin guardar…'); clearTimeout(S.saveT); S.saveT = setTimeout(() => { save().catch(reportError); }, 700); }
 export async function save(force = false) {
   if (!P()) return;
   clearTimeout(S.saveT); S.saveT = null;
@@ -28,12 +28,12 @@ export async function save(force = false) {
     else { setSaveStatus('Error al guardar'); toast(e.message, 5000); }
   } finally {
     S.saving = false;
-    if (S.saveAgain) { S.saveAgain = false; save(); }
+    if (S.saveAgain) { S.saveAgain = false; save().catch(reportError); }
   }
 }
 export async function flushSave() { if (S.saveT || S.saving) { await save(); while (S.saving) await new Promise((r) => setTimeout(r, 50)); } }
 
-export function scheduleAnalyze() { clearTimeout(S.anT); S.anT = setTimeout(analyzeNow, 350); }
+export function scheduleAnalyze() { clearTimeout(S.anT); S.anT = setTimeout(() => { analyzeNow().catch(reportError); }, 350); }
 export async function analyzeNow() {
   if (!P()) return;
   const seq = ++S.anSeq;
@@ -44,7 +44,7 @@ export async function analyzeNow() {
   } catch (e) {
     console.error(e);
     // Reintenta si el análisis falló por red y nadie pidió uno más nuevo
-    if (seq === S.anSeq) setTimeout(() => { if (seq === S.anSeq) analyzeNow(); }, 2000);
+    if (seq === S.anSeq) setTimeout(() => { if (seq === S.anSeq) analyzeNow().catch(reportError); }, 2000);
     return;
   }
   renderEnvFilter(); renderFlowFilter(); renderCanvas(); renderStatusbar(); refreshInspectorAnalysis(); updateCopilotBadge();

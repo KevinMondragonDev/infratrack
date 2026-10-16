@@ -192,7 +192,7 @@ junto con las pruebas de interfaz (Playwright) y SonarCloud.
 - Pruebas de interfaz con Playwright:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install playwright && .venv/bin/python -m playwright install chromium
+python3 -m venv .venv && .venv/bin/pip install -r requirements-ui.txt && .venv/bin/python -m playwright install chromium
 .venv/bin/python -m unittest tests.ui.test_ui -v
 ```
 

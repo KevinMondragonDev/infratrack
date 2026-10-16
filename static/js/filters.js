@@ -15,7 +15,7 @@ export function envDim(n) {
 }
 export function renderEnvFilter() {
   const sel = $('#envFilter');
-  const envs = [...new Set(P().nodes.filter((n) => n.type === 'account').map((n) => (n.config || {}).environment).filter(Boolean))].sort();
+  const envs = [...new Set(P().nodes.filter((n) => n.type === 'account').map((n) => (n.config || {}).environment).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (S.envFilter && !envs.includes(S.envFilter)) S.envFilter = '';
   sel.innerHTML = `<option value="">Todos los ambientes</option>${envs.map((e) => `<option ${e === S.envFilter ? 'selected' : ''}>${esc(e)}</option>`).join('')}`;
   sel.classList.toggle('hidden', !envs.length);
