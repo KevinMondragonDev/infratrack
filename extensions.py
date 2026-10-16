@@ -6,6 +6,7 @@ Mixin del Analyzer de copilot.py.
 import re
 
 import glue_catalog as gc
+import tfstate
 
 TRI_YES, TRI_NO, TRI_UNKNOWN = "yes", "no", "unknown"
 EXTERNAL_TYPES = {"users", "onprem", "saas", "idp", "corp_proxy", "corp_firewall", "secops", "observability", "cicd",
@@ -188,6 +189,35 @@ class ExtensionChecks:
                 self.add("medium", "Alta disponibilidad", "VPCE-SINGLE-AZ", f"Endpoint '{self.label(ep)}' en una sola AZ",
                          "Si la AZ falla, las cargas de otras AZ pierden el endpoint (y pagan tráfico cross-AZ).",
                          "Despliégalo en una subnet por AZ: conéctalo a las subnets adicionales.", [ep] + subs)
+
+    # ───────────── Terraform (estado y plan importados) ─────────────
+    def check_terraform(self):
+        imp = self.p.get("tf_import") or {}
+        only_tf = imp.get("only_tf") or []
+        if only_tf:
+            names = ", ".join(f"{r.get('name')} ({r.get('tf_type')})" for r in only_tf[:8]) + ("…" if len(only_tf) > 8 else "")
+            self.add("info", "Seguimiento", "TF-ONLY-IN-STATE", f"{len(only_tf)} recurso(s) en Terraform que no están en el diagrama",
+                     names, "Agrégalos desde Proyecto → Importar estado o plan de Terraform, o documenta por qué no aplican.", [])
+        missing = set(imp.get("only_diagram_ids") or [])
+        stale = [n for n in self.nodes.values() if n["id"] in missing and n.get("terraformed")]
+        if stale:
+            self.add("low", "Seguimiento", "TF-NOT-IN-STATE", f"{len(stale)} componente(s) marcados como terraformados no están en el estado",
+                     ", ".join(self.label(n) for n in stale[:8]),
+                     "Revisa si el recurso se eliminó o si está en otro estado/workspace; ajusta la palomita.", stale)
+        plan = self.p.get("tf_plan") or {}
+        for sev, rule, title, detail, rec, ids in tfstate.plan_findings(plan)[0]:
+            self.add(sev, "Seguimiento", rule, title, detail, rec, [i for i in ids if i in self.nodes])
+        for node_id, action in (plan.get("changes") or {}).items():
+            n = self.nodes.get(node_id)
+            if n and action in ("delete", "replace") and n["type"] in tfstate.STATEFUL:
+                verb = "destruye" if action == "delete" else "reemplaza (destruye y crea)"
+                self.add("high", "Datos", "TF-PLAN-DESTROY", f"El plan {verb} '{self.label(n)}'",
+                         f"{self.comp(n)['name']} guarda datos: el cambio puede perderlos.",
+                         "Confirma respaldo/snapshot y usa lifecycle { prevent_destroy = true } en recursos con datos.", [n])
+        for r in plan.get("unmatched") or []:
+            if r.get("action") in ("delete", "replace") and r.get("component") in tfstate.STATEFUL:
+                self.add("high", "Datos", "TF-PLAN-DESTROY", f"El plan destruye o reemplaza {r.get('address')}",
+                         "Recurso con datos que no está en el diagrama.", "Confirma respaldo antes de aplicar.", [])
 
     # ───────────── Glue Data Catalog ─────────────
     def check_glue_catalogs(self):

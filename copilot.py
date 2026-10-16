@@ -2187,6 +2187,7 @@ class Analyzer(SecurityChecks, ExtensionChecks):
         self.check_enduser()
         self.check_externals()
         self.check_glue_catalogs()
+        self.check_terraform()
         self.check_tags()
         pending = self.check_tracking()
         roles = self.consolidate_roles(plans)
