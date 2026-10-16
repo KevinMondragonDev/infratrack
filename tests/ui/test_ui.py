@@ -177,6 +177,40 @@ class AwsImportUiTest(UiTest):
         self.assertGreater(self.node_count(), 15)
 
 
+class ExportUiTest(UiTest):
+    def download(self, act):
+        self.page.locator("#btnMenu").click()
+        with self.page.expect_download() as info:
+            self.page.locator(f"[data-act='{act}']").click()
+        d = info.value
+        path = os.path.join(self.tmp.name, d.suggested_filename)
+        d.save_as(path)
+        return d.suggested_filename, path
+
+    def test_exports(self):
+        import xml.dom.minidom
+        name, path = self.download("export-svg")
+        self.assertTrue(name.endswith(".svg"))
+        svg = open(path, encoding="utf-8").read()
+        xml.dom.minidom.parseString(svg.encode())  # XML válido
+        self.assertIn("data:image/svg+xml;base64,", svg)  # iconos incrustados
+        self.assertNotIn('class="port"', svg)
+        name, path = self.download("export-png")
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(8), b"\x89PNG\r\n\x1a\n")
+        self.assertGreater(os.path.getsize(path), 20000)
+        name, path = self.download("export-drawio")
+        doc = xml.dom.minidom.parse(path)
+        cells = doc.getElementsByTagName("mxCell")
+        self.assertGreater(len([c for c in cells if c.getAttribute("vertex") == "1"]), 15)
+        self.assertGreater(len([c for c in cells if c.getAttribute("edge") == "1"]), 5)
+        if os.environ.get("INFRATRACK_EXPORT_DIR"):
+            import shutil
+            for f in os.listdir(self.tmp.name):
+                if f.endswith((".png", ".svg", ".drawio")):
+                    shutil.copy(os.path.join(self.tmp.name, f), os.environ["INFRATRACK_EXPORT_DIR"])
+
+
 class RulesUiTest(UiTest):
     def test_disable_rule_from_rules_tab(self):
         self.assertTrue(self.js("window.InfraTrack.S.analysis.findings.some(f => f.rule === 'EMR-ICEBERG')"))

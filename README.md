@@ -50,6 +50,7 @@ Sin conexión o detrás de un proxy, descarga el ZIP a mano y usa `python3 app.p
 | Permisos de una conexión | Selecciona la flecha: política IAM, políticas de recurso, reglas de Security Group, ruta (NAT/endpoints/VPC Link) y Terraform |
 | Copilot | Botón **Copilot**: hallazgos, roles IAM consolidados, Security Groups, preguntas, pendientes de terraform |
 | Reporte | Menú *Proyecto → Exportar reporte Markdown* para llevar a la revisión con el arquitecto |
+| Imagen / draw.io | Menú *Proyecto → Exportar imagen PNG*, *SVG* o *draw.io* (iconos incrustados: se abre en diagrams.net, Confluence o presentaciones) |
 
 Atajos: `Supr` eliminar · `Ctrl/Cmd+Z` deshacer · `Ctrl/Cmd+Shift+Z` rehacer · `Ctrl/Cmd+D` duplicar ·
 `Esc` deseleccionar · `Ctrl/Cmd + rueda` (o pinch) zoom · arrastrar el fondo para moverte.
