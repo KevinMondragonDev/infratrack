@@ -145,6 +145,22 @@ Security Best Practices (FSBP) y CIS cuando aplica, y sus hallazgos.
   directorio y 2 AZ).
 - El selector de **ambiente** en la barra del lienzo resalta sólo las cuentas de ese ambiente.
 
+### Estado y plan de Terraform
+
+*Proyecto → Importar estado o plan de Terraform*:
+
+```bash
+terraform show -json > estado.json                      # o sube terraform.tfstate directamente
+terraform plan -out plan.tfplan && terraform show -json plan.tfplan > plan.json
+```
+
+- **Estado**: empareja cada recurso con su componente (primero por la dirección de Terraform del componente, luego por
+  nombre/tag `Name` y tipo), marca la palomita de terraformado y guarda dirección y ARN. Lista lo que existe en Terraform
+  y no en el diagrama (puedes agregarlo con un clic) y lo que está en el diagrama pero no en el estado.
+- **Plan**: dibuja en cada componente lo que va a pasar (+ crear, ~ modificar, − destruir, ± reemplazar) y el Copilot
+  marca como **alto** cualquier destrucción o reemplazo de un recurso con datos (RDS, Aurora, S3, DynamoDB, KMS, EFS…).
+- Sólo se guardan nombres, direcciones, ARNs, CIDRs y tags: nunca contraseñas ni valores marcados como sensibles.
+
 ### Reglas configurables por proyecto
 
 En **Copilot → Reglas** están las ~250 reglas (el registro se genera leyendo el código, así que siempre está al día).

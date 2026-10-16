@@ -1,4 +1,5 @@
 /* InfraTrack — canvas */
+import { planBadge } from './tf-import.js';
 import { $, ACCESS_SHORT, CONTAINER_PREFIX, ENV_COLOR, NAMED_COLORS, S, SEV_LABEL, SUBNET_STYLE, esc, isAssoc, trunc } from './core.js';
 import { envDim } from './filters.js';
 import { iconUrl } from './icons.js';
@@ -73,6 +74,7 @@ export function renderCanvas() {
     const cx = cicon ? 40 : 12;
     out += `<g class="container ${isSel('node', n.id) ? 'sel' : ''} ${S.hover === n.id ? 'drop-target' : ''} ${envDim(n) ? 'dim' : ''}" data-node="${n.id}" transform="translate(${n.x},${n.y})">
       <rect class="cbody" width="${n.w}" height="${n.h}" rx="10" fill="${st.fill}" stroke="${st.stroke}"/>
+      ${planBadge(n)}
       ${pending ? `<rect class="pending-ring" x="-4" y="-4" width="${n.w + 8}" height="${n.h + 8}" rx="13"/>` : ''}
       ${sev ? `<circle class="sevdot sev-${sev}" cx="${n.w - 34}" cy="16" r="5"><title>Hallazgo ${SEV_LABEL[sev]}</title></circle>` : ''}
       ${cicon ? `<image href="${esc(cicon)}" x="8" y="7" width="26" height="26"/>` : ''}
@@ -139,6 +141,7 @@ export function renderCanvas() {
       ${sev ? `<rect class="sevring sev-${sev}" x="-4" y="-4" width="${w + 8}" height="${h + 8}" rx="11"><title>Hallazgo ${SEV_LABEL[sev]}</title></rect>` : ''}
       ${pending ? `<rect class="pending-ring" x="-7" y="-7" width="${w + 14}" height="${h + 14}" rx="13"/>` : ''}
       <rect class="body" width="${w}" height="${h}" rx="8"/>
+      ${planBadge(n)}
       ${icon ? `<rect class="icon-tile" x="5" y="${(h - 40) / 2}" width="40" height="40" rx="6"/>
       <image href="${esc(icon)}" x="9" y="${(h - 32) / 2}" width="32" height="32"/>`
     : `<path d="M8,0 H38 V${h} H8 A8,8 0 0 1 0,${h - 8} V8 A8,8 0 0 1 8,0 Z" fill="${color}"/>

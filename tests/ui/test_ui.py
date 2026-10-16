@@ -28,6 +28,13 @@ GET_TABLES = {"TableList": [
      "StorageDescriptor": {"Location": "s3://dlz/eventos", "Columns": [{"Name": "payload", "Type": "string"}]}}]}
 
 
+TF_STATE = {"values": {"root_module": {"resources": [
+    {"address": "aws_s3_bucket.raw", "mode": "managed", "type": "aws_s3_bucket", "name": "raw",
+     "values": {"bucket": "pedidos-data-lake-raw", "arn": "arn:aws:s3:::pedidos-data-lake-raw"}}]}}}
+TF_PLAN = {"resource_changes": [{"address": "aws_db_instance.db", "mode": "managed", "type": "aws_db_instance", "name": "db",
+                                 "change": {"actions": ["delete", "create"], "after": {"name": "BD pedidos"}}}]}
+
+
 @unittest.skipIf(sync_playwright is None, "Playwright no está instalado")
 class UiTest(unittest.TestCase):
     demo = False
@@ -134,6 +141,27 @@ class AppUiTest(UiTest):
         self.assertEqual(self.node_count(), before - 1)
         self.page.locator("#btnUndo").click()
         self.assertEqual(self.node_count(), before)
+
+
+class TerraformUiTest(UiTest):
+    def upload(self, doc, name):
+        self.page.locator("#btnMenu").click()
+        self.page.locator("[data-act='tf-import']").click()
+        self.page.locator("#tfFile").set_input_files(
+            files=[{"name": name, "mimeType": "application/json", "buffer": json.dumps(doc).encode()}])
+
+    def test_state_marks_terraformed(self):
+        self.assertFalse(self.js("window.InfraTrack.nodeById('raw').terraformed"))
+        self.upload(TF_STATE, "state.json")
+        self.page.locator("[data-tf='apply-state']").click()
+        self.assertTrue(self.js("window.InfraTrack.nodeById('raw').terraformed"))
+        self.assertEqual(self.js("window.InfraTrack.nodeById('raw').tf_address"), "aws_s3_bucket.raw")
+
+    def test_plan_badges(self):
+        self.upload(TF_PLAN, "plan.json")
+        self.page.locator("[data-tf='apply-plan']").click()
+        self.page.wait_for_selector("[data-node='rds'] .plan-badge.plan-replace")
+        self.page.wait_for_function("window.InfraTrack.S.analysis.findings.some(f => f.rule === 'TF-PLAN-DESTROY')")
 
 
 class RulesUiTest(UiTest):

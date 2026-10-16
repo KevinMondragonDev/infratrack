@@ -1,4 +1,5 @@
 /* InfraTrack — menu */
+import { openTfImport } from './tf-import.js';
 import { toast } from './api.js';
 import { closeModal, openModal } from './copilot-modal.js';
 import { $, S, esc } from './core.js';
@@ -14,6 +15,7 @@ export async function onMenu(act) {
   const p = P();
   if (act === 'dup-env') { await duplicateForEnvironment(); return; }
   if (act === 'compare') { await openCompare(); return; }
+  if (act === 'tf-import') { openTfImport(); return; }
   if (act === 'duplicate') { await flushSave(); const c = await store.duplicate(p.id); await loadProjects(c.id); toast('Proyecto duplicado'); }
   else if (act === 'delete') {
     if (!confirm(`¿Eliminar “${p.name}”? Se moverá a data/trash.`)) return;
