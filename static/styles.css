@@ -284,3 +284,6 @@ details.cat-tb { border-top: 1px solid var(--border); padding: 4px 0 4px 6px; }
 details.cat-tb[open] { background: var(--panel-2); border-radius: 6px; padding: 4px 8px 8px; }
 .cat-tb-body .field { margin-bottom: 7px; }
 label.pii { display: flex; align-items: center; gap: 2px; font-size: 10.5px; color: var(--muted); }
+
+.banner.demo { background: #e8f1fb; color: #0b3d6e; border-bottom-color: #9cc5f5; font-size: 12.5px; flex-wrap: wrap; }
+@media (prefers-color-scheme: dark) { .banner.demo { background: #13263b; color: #cfe3fa; border-bottom-color: #24476d; } }

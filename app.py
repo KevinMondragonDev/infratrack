@@ -10,6 +10,7 @@ Uso:
 Sólo usa la librería estándar de Python (3.9+). La IA es opcional (pip install anthropic).
 """
 import argparse
+import base64
 import json
 import mimetypes
 import os
@@ -37,6 +38,8 @@ from storage import Conflict, Store  # noqa: E402
 STATIC = os.path.join(BASE, "static")
 MAX_BODY = 20 * 1024 * 1024
 STORE = None
+# Demo pública (p. ej. Vercel): sin almacenamiento en servidor; los proyectos viven en el navegador.
+DEMO = os.environ.get("INFRATRACK_DEMO") == "1"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,20 +98,29 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    @staticmethod
+    def find_route(method, path):
+        for m, pattern, fn in ROUTES:
+            match = re.fullmatch(pattern, path) if m == method else None
+            if match:
+                return fn, match.groups()
+        return None, ()
+
+    def dispatch(self, method, path):
+        if method != "GET" and not self._same_origin():
+            return self.error(403, "Origen no permitido")
+        if not path.startswith("/api/"):
+            return self.static(path) if method == "GET" else self.error(405, "Método no permitido")
+        fn, args = self.find_route(method, path)
+        if fn is None:
+            return self.error(404, "No encontrado")
+        if DEMO and fn not in DEMO_ROUTES:
+            return self.error(404, "No disponible en la demo")
+        return fn(self, *args)
+
     def route(self, method):
-        path = urlparse(self.path).path
         try:
-            if method != "GET" and not self._same_origin():
-                return self.error(403, "Origen no permitido")
-            if not path.startswith("/api/"):
-                return self.static(path) if method == "GET" else self.error(405, "Método no permitido")
-            for m, pattern, fn in ROUTES:
-                if m != method:
-                    continue
-                match = re.fullmatch(pattern, path)
-                if match:
-                    return fn(self, *match.groups())
-            self.error(404, "No encontrado")
+            self.dispatch(method, urlparse(self.path).path)
         except KeyError:
             self.error(404, "Proyecto no encontrado")
         except Conflict as c:
@@ -227,7 +239,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({**res, **icons.available(BASE)})
 
     def api_ai_status(self):
+        if DEMO:
+            return self.send_json({"available": False, "reason": "El Copilot IA no está disponible en la demo pública."})
         self.send_json(ai.status())
+
+    # ───── sin estado (los usa la demo; reciben el proyecto en el cuerpo) ─────
+    def api_config(self):
+        self.send_json({"storage": "browser" if DEMO else "server", "demo": DEMO})
+
+    def api_sample(self):
+        self.send_json(sample_project())
+
+    def api_export_md_post(self):
+        # El reporte viaja en base64 (la respuesta no contiene marcado reflejado); el navegador arma la descarga.
+        md = build_markdown(self.body()).encode("utf-8")
+        self.send_json({"markdown_b64": base64.b64encode(md).decode("ascii")})
+
+    def api_compare_projects(self):
+        b = self.body()
+        self.send_json(comparer.compare(b.get("a") or {}, b.get("b") or {}))
+
+    def api_duplicate_env(self):
+        b = self.body()
+        env = (b.get("environment") or "").strip()
+        if not env:
+            raise ValueError("Falta el ambiente destino")
+        amap = {str(k): str(v) for k, v in (b.get("account_map") or {}).items() if str(v).strip()}
+        for v in amap.values():
+            if not re.fullmatch(r"\d{12}", v):
+                raise ValueError(f"ID de cuenta inválido: {v}")
+        self.send_json(comparer.for_environment(b.get("project") or {}, env, amap, b.get("name")))
 
     def api_ai_ask(self):
         b = self.body()
@@ -242,6 +283,11 @@ class Handler(BaseHTTPRequestHandler):
 P = r"([a-zA-Z0-9_-]{1,64})"
 ROUTES = [
     ("GET", r"/api/catalog", Handler.api_catalog),
+    ("GET", r"/api/config", Handler.api_config),
+    ("GET", r"/api/sample", Handler.api_sample),
+    ("POST", r"/api/export-md", Handler.api_export_md_post),
+    ("POST", r"/api/compare-projects", Handler.api_compare_projects),
+    ("POST", r"/api/duplicate-env", Handler.api_duplicate_env),
     ("GET", r"/api/projects", Handler.api_list),
     ("POST", r"/api/projects", Handler.api_create),
     ("POST", r"/api/import", Handler.api_import),
@@ -263,6 +309,11 @@ ROUTES = [
 ]
 
 
+DEMO_ROUTES = {Handler.api_catalog, Handler.api_config, Handler.api_sample, Handler.api_analyze, Handler.api_glue_import,
+               Handler.api_export_md_post, Handler.api_compare_projects, Handler.api_duplicate_env, Handler.api_icons,
+               Handler.api_ai_status}
+
+
 def main():
     global STORE
     ap = argparse.ArgumentParser(description="InfraTrack")
@@ -277,7 +328,7 @@ def main():
         icons.setup_icons(BASE, zip_path=args.icons_zip)
         return
     STORE = Store(args.data)
-    if not STORE.list():
+    if not DEMO and not STORE.list():
         STORE.create(None, sample_project())
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}"
