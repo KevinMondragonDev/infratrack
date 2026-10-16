@@ -1,0 +1,152 @@
+{
+ "description": "Salida 0.0.0.0/0 → TGW con proxy corporativo: no debe reportar salida sin filtrar ni pedir NAT.",
+ "project": {
+  "nodes": [
+   {
+    "id": "vpc",
+    "type": "vpc",
+    "label": "vpc",
+    "x": 0,
+    "y": 0,
+    "w": 1200,
+    "h": 700,
+    "config": {
+     "cidr": "10.0.0.0/16",
+     "flow_logs": true
+    }
+   },
+   {
+    "id": "pa",
+    "type": "subnet",
+    "label": "pa",
+    "x": 20,
+    "y": 50,
+    "w": 350,
+    "h": 250,
+    "config": {
+     "tier": "public",
+     "cidr": "10.0.0.0/24",
+     "az": "a"
+    }
+   },
+   {
+    "id": "pb",
+    "type": "subnet",
+    "label": "pb",
+    "x": 400,
+    "y": 50,
+    "w": 350,
+    "h": 250,
+    "config": {
+     "tier": "public",
+     "cidr": "10.0.1.0/24",
+     "az": "b"
+    }
+   },
+   {
+    "id": "aa",
+    "type": "subnet",
+    "label": "aa",
+    "x": 20,
+    "y": 350,
+    "w": 350,
+    "h": 300,
+    "config": {
+     "tier": "private",
+     "cidr": "10.0.10.0/24",
+     "az": "a"
+    }
+   },
+   {
+    "id": "ab",
+    "type": "subnet",
+    "label": "ab",
+    "x": 400,
+    "y": 350,
+    "w": 350,
+    "h": 300,
+    "config": {
+     "tier": "private",
+     "cidr": "10.0.11.0/24",
+     "az": "b"
+    }
+   },
+   {
+    "id": "igw",
+    "type": "igw",
+    "label": "igw",
+    "x": 780,
+    "y": 10,
+    "w": 110,
+    "h": 40,
+    "config": {}
+   },
+   {
+    "id": "fn",
+    "type": "lambda",
+    "label": "fn",
+    "x": 40,
+    "y": 400,
+    "w": 150,
+    "h": 56,
+    "config": {}
+   },
+   {
+    "id": "rt",
+    "type": "rtb",
+    "label": "rt",
+    "x": 220,
+    "y": 600,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "routes": [
+      {
+       "destination": "0.0.0.0/0",
+       "target_type": "tgw"
+      }
+     ]
+    }
+   },
+   {
+    "id": "tgw",
+    "type": "tgw",
+    "label": "tgw",
+    "x": 1300,
+    "y": 300,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "egress_inspection": "Proxy / firewall corporativo"
+    }
+   },
+   {
+    "id": "adobe",
+    "type": "ext_dataplatform",
+    "label": "adobe",
+    "x": 1500,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "product": "Adobe AEP",
+     "access": "Push desde AWS (API)"
+    }
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "source": "fn",
+    "target": "adobe",
+    "access": "write"
+   }
+  ]
+ },
+ "expect": [],
+ "not_expect": [
+  "SEC-EGRESS-FILTER",
+  "NET-NEEDS-NAT",
+  "NET-NO-DEFAULT-ROUTE"
+ ]
+}

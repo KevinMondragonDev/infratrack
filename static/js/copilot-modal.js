@@ -1,4 +1,5 @@
 /* InfraTrack — copilot-modal */
+import { filterRules, onRulesChange, onRulesClick, rulesTabHtml } from './rules-tab.js';
 import { api, copy, reportError } from './api.js';
 import { $, ACCESS_SHORT, S, SEVS, SEV_LABEL, esc } from './core.js';
 import { sgTable } from './inspector-analysis.js';
@@ -24,11 +25,12 @@ export function openCopilot(tab) {
 export function renderCopilotTab() {
   const A = S.analysis;
   const tabs = [['security', 'Seguridad'], ['findings', 'Hallazgos'], ['iam', 'Roles IAM'], ['sg', 'Security Groups'], ['questions', 'Preguntas al arquitecto'],
-    ['pending', 'Pendientes de terraform'], ['tags', 'Tags y Terraform'], ['ai', 'Copilot IA']];
+    ['pending', 'Pendientes de terraform'], ['tags', 'Tags y Terraform'], ['rules', 'Reglas'], ['ai', 'Copilot IA']];
   let c = '';
   if (!A) c = '<p class="muted">Analizando…</p>';
   else if (S.mtab === 'security') c = securityHtml(A);
   else if (S.mtab === 'tags') c = tagsHtml(A);
+  else if (S.mtab === 'rules') c = rulesTabHtml(A);
   else if (S.mtab === 'findings') {
     const cats = [...new Set(A.findings.map((f) => f.category))].sort((a, b) => a.localeCompare(b));
     const list = A.findings.filter((f) => S.sevFilter.has(f.severity) && (!S.catFilter || f.category === S.catFilter) && (S.showDismissed || !f.dismissed));
@@ -80,7 +82,11 @@ export function renderCopilotTab() {
       <div id="aiOut" class="md"></div></div>`
       : `<p>El Copilot IA es opcional. Las reglas de AWS ya funcionan sin él.</p><p class="muted">Para habilitarlo: <code>pip install anthropic</code> y exporta <code>ANTHROPIC_API_KEY</code> antes de iniciar <code>app.py</code>. (${esc(S.ai.reason || '')})</p>`;
   }
+  const scroll = $('#modalBody').scrollTop;
+  const search = $('#rulesSearch')?.value;
   $('#modalBody').innerHTML = `<div class="mtabs">${tabs.map(([k, l]) => `<button class="tab ${S.mtab === k ? 'on' : ''}" data-mtabbtn="${k}">${l}</button>`).join('')}</div><div class="mcontent">${c}</div>`;
+  $('#modalBody').scrollTop = scroll;
+  if (search && $('#rulesSearch')) { $('#rulesSearch').value = search; filterRules(); }
 }
 
 export function tagsHtml(A) {
@@ -127,6 +133,8 @@ export function securityHtml(A) {
 }
 
 export function onModalClick(ev) {
+  const r = ev.target.closest('[data-rules]');
+  if (r) { onRulesClick(r).catch(reportError); return; }
   const t = ev.target.closest('[data-mtabbtn],[data-sevtoggle],[data-copy],[data-goto],[data-seledge],[data-dismiss],[data-undismiss],[data-ai],[data-restore]');
   if (!t) return;
   if (t.dataset.mtabbtn) { S.mtab = t.dataset.mtabbtn; renderCopilotTab(); return; }
@@ -141,6 +149,7 @@ export function onModalClick(ev) {
 }
 export function onModalChange(ev) {
   const t = ev.target;
+  if (onRulesChange(t)) return;
   if (t.id === 'catFilter') { S.catFilter = t.value; renderCopilotTab(); }
   if (t.id === 'showDismissed') { S.showDismissed = t.checked; renderCopilotTab(); }
   if (t.id === 'secShowNa') { S.secShowNa = t.checked; renderCopilotTab(); }
@@ -175,3 +184,8 @@ export async function askAI(question, nodeId, outEl) {
     outEl.innerHTML = mdToHtml(r.answer);
   } catch (e) { outEl.innerHTML = `<p style="color:var(--danger)">${esc(e.message)}</p>`; }
 }
+
+export function onModalInput(ev) {
+  if (ev.target.id === 'rulesSearch') filterRules();
+}
+

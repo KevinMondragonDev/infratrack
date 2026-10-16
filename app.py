@@ -27,6 +27,7 @@ sys.path.insert(0, BASE)
 
 import ai  # noqa: E402
 import compare as comparer  # noqa: E402
+import rules as rule_registry  # noqa: E402
 import glue_catalog  # noqa: E402
 import icons  # noqa: E402
 from catalog import catalog  # noqa: E402
@@ -203,6 +204,20 @@ class Handler(BaseHTTPRequestHandler):
         merged = parsed if b.get("replace") else glue_catalog.merge(b.get("existing") or {}, parsed)
         self.send_json({"catalog": merged, "imported": glue_catalog.stats(parsed), "stats": glue_catalog.stats(merged)})
 
+    def api_rules(self):
+        self.send_json({"rules": rule_registry.registry()})
+
+    def api_rules_export_csv(self):
+        b = self.body()
+        text = rule_registry.to_csv(rule_registry.clean_overrides(b.get("overrides")), b.get("counts") or {})
+        self.send_json({"csv_b64": base64.b64encode(("\ufeff" + text).encode("utf-8")).decode("ascii")})
+
+    def api_rules_import(self):
+        b = self.body()
+        if b.get("csv") is not None:
+            return self.send_json({"overrides": rule_registry.from_csv(b["csv"])})
+        self.send_json({"overrides": rule_registry.clean_overrides(b.get("overrides"))})
+
     def api_compare(self, a, b):
         self.send_json(comparer.compare(STORE.get(a), STORE.get(b)))
 
@@ -299,6 +314,9 @@ ROUTES = [
     ("POST", r"/api/import", Handler.api_import),
     ("POST", r"/api/analyze", Handler.api_analyze),
     ("POST", r"/api/glue/import", Handler.api_glue_import),
+    ("GET", r"/api/rules", Handler.api_rules),
+    ("POST", r"/api/rules/export-csv", Handler.api_rules_export_csv),
+    ("POST", r"/api/rules/import", Handler.api_rules_import),
     ("GET", r"/api/icons", Handler.api_icons),
     ("POST", r"/api/icons/setup", Handler.api_icons_setup),
     ("GET", r"/api/ai/status", Handler.api_ai_status),
@@ -317,7 +335,7 @@ ROUTES = [
 
 DEMO_ROUTES = {Handler.api_catalog, Handler.api_config, Handler.api_sample, Handler.api_analyze, Handler.api_glue_import,
                Handler.api_export_md_post, Handler.api_compare_projects, Handler.api_duplicate_env, Handler.api_icons,
-               Handler.api_ai_status}
+               Handler.api_ai_status, Handler.api_rules, Handler.api_rules_export_csv, Handler.api_rules_import}
 
 
 def main():

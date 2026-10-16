@@ -145,6 +145,17 @@ Security Best Practices (FSBP) y CIS cuando aplica, y sus hallazgos.
   directorio y 2 AZ).
 - El selector de **ambiente** en la barra del lienzo resalta sólo las cuentas de ese ambiente.
 
+### Reglas configurables por proyecto
+
+En **Copilot → Reglas** están las ~250 reglas (el registro se genera leyendo el código, así que siempre está al día).
+Puedes desactivar las que no apliquen, cambiar su severidad y dejar un comentario; los ajustes se guardan con el
+proyecto y aparecen en el reporte. Para revisarlas con tu arquitecto: **Exportar lista para revisión (CSV)**, que la
+editen en Excel (columnas `activa`, `severidad_proyecto`, `comentario`) e **Importar CSV revisado**. También puedes
+exportar/importar la configuración en JSON para reutilizarla en otros proyectos.
+
+Los escenarios reales viven en `tests/cases/*.json` (proyecto + reglas que deben y no deben aparecer): agregar un caso
+es la forma de evitar que una regla nueva rompa otra.
+
 Puedes marcar un hallazgo como **“Aceptar riesgo / no aplica”** con un motivo; queda registrado en el reporte.
 
 ## Copilot IA (opcional)

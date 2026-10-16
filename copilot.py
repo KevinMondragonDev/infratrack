@@ -18,6 +18,7 @@ import unicodedata
 
 from catalog import COMPONENTS_BY_ID, effective_config, missing_required
 from extensions import EXTERNAL_TYPES, ExtensionChecks, tri_state
+import rules as rule_registry
 from security import SecurityChecks
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
@@ -2191,6 +2192,9 @@ class Analyzer(SecurityChecks, ExtensionChecks):
         roles = self.consolidate_roles(plans)
         sgs = self.consolidate_sgs(plans)
         sg_suggestions = self.check_security_groups(sgs)
+        # overrides del proyecto (reglas desactivadas o con otra severidad)
+        self.findings = rule_registry.apply_overrides(
+            self.findings, rule_registry.clean_overrides(self.settings.get("rules")))
         # de-duplicar por id
         seen, uniq = set(), []
         for f in self.findings:
