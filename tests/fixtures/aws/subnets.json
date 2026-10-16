@@ -1,0 +1,65 @@
+{
+ "Subnets": [
+  {
+   "SubnetId": "subnet-pa",
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.0.0/24",
+   "AvailabilityZone": "us-east-1a",
+   "MapPublicIpOnLaunch": true,
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "pub-a"
+    }
+   ]
+  },
+  {
+   "SubnetId": "subnet-pb",
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.1.0/24",
+   "AvailabilityZone": "us-east-1b",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "pub-b"
+    }
+   ]
+  },
+  {
+   "SubnetId": "subnet-aa",
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.10.0/24",
+   "AvailabilityZone": "us-east-1a",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "app-a"
+    }
+   ]
+  },
+  {
+   "SubnetId": "subnet-ab",
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.11.0/24",
+   "AvailabilityZone": "us-east-1b",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "app-b"
+    }
+   ]
+  },
+  {
+   "SubnetId": "subnet-da",
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.20.0/24",
+   "AvailabilityZone": "us-east-1a",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "data-a"
+    }
+   ]
+  }
+ ]
+}

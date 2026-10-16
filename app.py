@@ -29,6 +29,7 @@ import ai  # noqa: E402
 import compare as comparer  # noqa: E402
 import rules as rule_registry  # noqa: E402
 import tfstate  # noqa: E402
+import awsimport  # noqa: E402
 import glue_catalog  # noqa: E402
 import icons  # noqa: E402
 from catalog import catalog  # noqa: E402
@@ -205,6 +206,13 @@ class Handler(BaseHTTPRequestHandler):
         merged = parsed if b.get("replace") else glue_catalog.merge(b.get("existing") or {}, parsed)
         self.send_json({"catalog": merged, "imported": glue_catalog.stats(parsed), "stats": glue_catalog.stats(merged)})
 
+    def api_aws_import(self):
+        b = self.body()
+        texts = [t for t in (b.get("texts") or []) if isinstance(t, str)][:50]
+        origin = b.get("origin") or [0, 0]
+        ox, oy = (int(origin[0]), int(origin[1])) if isinstance(origin, list) and len(origin) == 2 else (0, 0)
+        self.send_json(awsimport.build(texts, awsimport.safe_region(b.get("region") or ""), (ox, oy)))
+
     def api_tf_analyze(self):
         b = self.body()
         self.send_json(tfstate.analyze_text(b.get("project") or {}, b.get("text") or ""))
@@ -321,6 +329,7 @@ ROUTES = [
     ("POST", r"/api/glue/import", Handler.api_glue_import),
     ("GET", r"/api/rules", Handler.api_rules),
     ("POST", r"/api/tf/analyze", Handler.api_tf_analyze),
+    ("POST", r"/api/aws/import", Handler.api_aws_import),
     ("POST", r"/api/rules/export-csv", Handler.api_rules_export_csv),
     ("POST", r"/api/rules/import", Handler.api_rules_import),
     ("GET", r"/api/icons", Handler.api_icons),
@@ -342,7 +351,7 @@ ROUTES = [
 DEMO_ROUTES = {Handler.api_catalog, Handler.api_config, Handler.api_sample, Handler.api_analyze, Handler.api_glue_import,
                Handler.api_export_md_post, Handler.api_compare_projects, Handler.api_duplicate_env, Handler.api_icons,
                Handler.api_ai_status, Handler.api_rules, Handler.api_rules_export_csv, Handler.api_rules_import,
-               Handler.api_tf_analyze}
+               Handler.api_tf_analyze, Handler.api_aws_import}
 
 
 def main():

@@ -1,0 +1,24 @@
+{
+ "VpcEndpoints": [
+  {
+   "VpcEndpointId": "vpce-s3",
+   "VpcId": "vpc-1",
+   "ServiceName": "com.amazonaws.us-east-1.s3",
+   "VpcEndpointType": "Gateway",
+   "RouteTableIds": [
+    "rtb-app"
+   ]
+  },
+  {
+   "VpcEndpointId": "vpce-sm",
+   "VpcId": "vpc-1",
+   "ServiceName": "com.amazonaws.us-east-1.secretsmanager",
+   "VpcEndpointType": "Interface",
+   "SubnetIds": [
+    "subnet-aa",
+    "subnet-ab"
+   ],
+   "PrivateDnsEnabled": true
+  }
+ ]
+}

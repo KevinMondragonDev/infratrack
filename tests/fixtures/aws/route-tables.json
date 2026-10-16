@@ -1,0 +1,79 @@
+{
+ "RouteTables": [
+  {
+   "RouteTableId": "rtb-main",
+   "VpcId": "vpc-1",
+   "Associations": [
+    {
+     "Main": true
+    }
+   ],
+   "Routes": [
+    {
+     "DestinationCidrBlock": "10.0.0.0/16",
+     "GatewayId": "local"
+    }
+   ]
+  },
+  {
+   "RouteTableId": "rtb-pub",
+   "VpcId": "vpc-1",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "rt-public"
+    }
+   ],
+   "Associations": [
+    {
+     "SubnetId": "subnet-pa"
+    },
+    {
+     "SubnetId": "subnet-pb"
+    }
+   ],
+   "Routes": [
+    {
+     "DestinationCidrBlock": "10.0.0.0/16",
+     "GatewayId": "local"
+    },
+    {
+     "DestinationCidrBlock": "0.0.0.0/0",
+     "GatewayId": "igw-1"
+    }
+   ]
+  },
+  {
+   "RouteTableId": "rtb-app",
+   "VpcId": "vpc-1",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "rt-app"
+    }
+   ],
+   "Associations": [
+    {
+     "SubnetId": "subnet-aa"
+    },
+    {
+     "SubnetId": "subnet-ab"
+    }
+   ],
+   "Routes": [
+    {
+     "DestinationCidrBlock": "10.0.0.0/16",
+     "GatewayId": "local"
+    },
+    {
+     "DestinationCidrBlock": "0.0.0.0/0",
+     "NatGatewayId": "nat-1"
+    },
+    {
+     "DestinationPrefixListId": "pl-63a5400a",
+     "GatewayId": "vpce-s3"
+    }
+   ]
+  }
+ ]
+}

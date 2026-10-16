@@ -1,0 +1,62 @@
+{
+ "NetworkAcls": [
+  {
+   "NetworkAclId": "acl-def",
+   "VpcId": "vpc-1",
+   "IsDefault": true,
+   "Associations": [],
+   "Entries": [
+    {
+     "RuleNumber": 100,
+     "Protocol": "-1",
+     "RuleAction": "allow",
+     "Egress": false,
+     "CidrBlock": "0.0.0.0/0"
+    },
+    {
+     "RuleNumber": 100,
+     "Protocol": "-1",
+     "RuleAction": "allow",
+     "Egress": true,
+     "CidrBlock": "0.0.0.0/0"
+    },
+    {
+     "RuleNumber": 32767,
+     "Protocol": "-1",
+     "RuleAction": "deny",
+     "Egress": false,
+     "CidrBlock": "0.0.0.0/0"
+    }
+   ]
+  },
+  {
+   "NetworkAclId": "acl-data",
+   "VpcId": "vpc-1",
+   "IsDefault": false,
+   "Associations": [
+    {
+     "SubnetId": "subnet-da"
+    }
+   ],
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "acl-data"
+    }
+   ],
+   "Entries": [
+    {
+     "RuleNumber": 100,
+     "Protocol": "6",
+     "RuleAction": "allow",
+     "Egress": false,
+     "CidrBlock": "10.0.10.0/23",
+     "PortRange": {
+      "From": 5432,
+      "To": 5432
+     }
+    }
+   ]
+  }
+ ]
+}
