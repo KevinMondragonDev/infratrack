@@ -1,0 +1,10 @@
+# Nunca subir datos locales ni configuración personal
+data/
+.claude/
+.vscode/
+.git/
+tests/
+.github/
+__pycache__/
+*.pyc
+dist/

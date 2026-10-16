@@ -101,3 +101,46 @@ class ServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DemoModeTest(unittest.TestCase):
+    """Modo demo (Vercel): sin almacenamiento en servidor."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prev = app.DEMO
+        app.DEMO = True
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        app.DEMO = cls.prev
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    call = ServerTest.call
+
+    def test_stateless_endpoints(self):
+        _, cfg = self.call("GET", "/api/config")
+        self.assertEqual(cfg["storage"], "browser")
+        _, sample = self.call("GET", "/api/sample")
+        self.assertTrue(sample["nodes"])
+        _, a = self.call("POST", "/api/analyze", sample)
+        self.assertIn("posture", a)
+        _, md = self.call("POST", "/api/export-md", sample)
+        self.assertIn("# ", md)
+        _, pre = self.call("POST", "/api/duplicate-env", {"project": sample, "environment": "pre"})
+        self.assertEqual(pre["settings"]["environment"], "pre")
+        _, d = self.call("POST", "/api/compare-projects", {"a": sample, "b": pre})
+        self.assertIn("changed", d)
+        _, ai = self.call("GET", "/api/ai/status")
+        self.assertFalse(ai["available"])
+
+    def test_storage_disabled(self):
+        for method, path in (("GET", "/api/projects"), ("POST", "/api/projects"), ("POST", "/api/icons/setup"),
+                             ("POST", "/api/ai/ask")):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.call(method, path, {} if method == "POST" else None)
+            self.assertEqual(ctx.exception.code, 404, path)

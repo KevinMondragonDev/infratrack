@@ -68,6 +68,86 @@ async function copy(text) {
   }
 }
 
+/* ───────────────────────── Almacenamiento ─────────────────────────
+   server: proyectos en archivos JSON del servidor (uso interno, `python3 app.py`).
+   browser: demo pública (p. ej. en Vercel); cada visitante guarda sus proyectos en su navegador. */
+function download(filename, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const fileSafe = (s) => String(s || 'proyecto').replace(/[^\w\-. áéíóúñÁÉÍÓÚÑ]+/g, '_');
+
+const serverStore = {
+  list: () => api('GET', '/api/projects'),
+  get: (id) => api('GET', `/api/projects/${id}`),
+  create: (name, sample) => api('POST', '/api/projects', { name, sample }),
+  save: (p, force) => api('PUT', `/api/projects/${p.id}`, force ? { ...p, _force: true } : p),
+  remove: (id) => api('DELETE', `/api/projects/${id}`),
+  duplicate: (id, body) => api('POST', `/api/projects/${id}/duplicate`, body),
+  importProject: (data) => api('POST', '/api/import', data),
+  compare: (a, b) => api('GET', `/api/compare/${a}/${b}`),
+  backups: (id) => api('GET', `/api/projects/${id}/backups`),
+  restore: (id, bid) => api('POST', `/api/projects/${id}/backups/${bid}/restore`),
+  download(p, kind) {
+    const a = document.createElement('a'); a.href = `/api/projects/${p.id}/export.${kind}`; a.download = ''; a.click();
+  },
+};
+
+const LS_PROJECTS = 'it.projects.v1';
+const browserStore = {
+  _all() { return lsGet(LS_PROJECTS, {}) || {}; },
+  _put(all) {
+    try { localStorage.setItem(LS_PROJECTS, JSON.stringify(all)); }
+    catch { throw new Error('El navegador no tiene espacio para guardar: exporta el proyecto a JSON.'); }
+  },
+  async list() {
+    return Object.values(this._all()).map((p) => ({ id: p.id, name: p.name, updated: p.updated, nodes: p.nodes.length,
+      terraformed: p.nodes.filter((n) => n.terraformed).length })).sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+  },
+  async get(id) {
+    const p = this._all()[id];
+    if (!p) { const e = new Error('Proyecto no encontrado'); e.status = 404; throw e; }
+    return structuredClone(p);
+  },
+  async create(name, sample, template) {
+    const base = template ? structuredClone(template) : sample ? await api('GET', '/api/sample') : {};
+    const now = new Date().toISOString();
+    const p = { description: '', settings: { region: 'us-east-1', account_id: '', environment: 'dev', prefix: '' }, nodes: [], edges: [],
+      dismissed: {}, ...base, id: uid('p'), name: name || base.name || 'Nuevo proyecto', created: now, updated: now, rev: 1 };
+    const all = this._all(); all[p.id] = p; this._put(all);
+    return p;
+  },
+  async save(p, force) {
+    const all = this._all();
+    const cur = all[p.id];
+    if (cur && !force && p.rev !== undefined && cur.rev !== p.rev) { const e = new Error('Conflicto'); e.status = 409; throw e; }
+    const saved = { ...structuredClone(p), rev: (cur?.rev || 0) + 1, updated: new Date().toISOString() };
+    all[p.id] = saved; this._put(all);
+    return { rev: saved.rev, updated: saved.updated };
+  },
+  async remove(id) { const all = this._all(); delete all[id]; this._put(all); },
+  async duplicate(id, body = {}) {
+    const p = await this.get(id);
+    if (body.environment) {
+      const copy = await api('POST', '/api/duplicate-env', { project: p, environment: body.environment, account_map: body.account_map || {} });
+      return this.create(copy.name, false, copy);
+    }
+    return this.create(`${p.name} (copia)`, false, p);
+  },
+  importProject(data) { return this.create(data.name || 'Importado', false, data); },
+  async compare(a, b) { return api('POST', '/api/compare-projects', { a: await this.get(a), b: await this.get(b) }); },
+  async backups() { return []; },
+  async restore() { throw new Error('No disponible en la demo'); },
+  async download(p, kind) {
+    if (kind === 'json') { download(`${fileSafe(p.name)}.infratrack.json`, JSON.stringify(p, null, 2), 'application/json'); return; }
+    const r = await fetch('/api/export-md', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+    if (!r.ok) throw new Error('No se pudo generar el reporte');
+    download(`${fileSafe(p.name)}.md`, await r.text(), 'text/markdown');
+  },
+};
+let store = serverStore;
+
 /* ───────────────────────── Modelo ───────────────────────── */
 const P = () => S.project;
 const nodeById = (id) => P().nodes.find((n) => n.id === id);
@@ -151,8 +231,7 @@ async function save(force = false) {
   S.saving = true; setSaveStatus('Guardando…');
   try {
     const body = { ...P() };
-    if (force) body._force = true;
-    const r = await api('PUT', `/api/projects/${P().id}`, body);
+    const r = await store.save(body, force);
     P().rev = r.rev; P().updated = r.updated;
     setSaveStatus('Guardado ✓');
     $('#conflict').classList.add('hidden');
@@ -181,7 +260,7 @@ async function analyzeNow() {
 
 /* ───────────────────────── Proyectos ───────────────────────── */
 async function loadProjects(selectId) {
-  S.projects = await api('GET', '/api/projects');
+  S.projects = await store.list();
   const sel = $('#projectSelect');
   sel.innerHTML = S.projects.map((p) => `<option value="${p.id}">${esc(p.name)} (${p.terraformed}/${p.nodes})</option>`).join('');
   const id = selectId || lsGet('it.lastProject', null);
@@ -191,7 +270,7 @@ async function loadProjects(selectId) {
 
 async function openProject(id) {
   if (P() && P().id !== id) await flushSave();
-  const p = await api('GET', `/api/projects/${id}`);
+  const p = await store.get(id);
   p.dismissed = p.dismissed || {};
   // Aplica defaults del catálogo para que el formulario muestre lo mismo que evalúa el Copilot.
   for (const n of p.nodes) {
@@ -219,7 +298,7 @@ async function newProject(sample = false) {
   const name = sample ? null : prompt('Nombre del proyecto', 'Nueva arquitectura');
   if (!sample && name === null) return;
   await flushSave();
-  const p = await api('POST', '/api/projects', { name, sample });
+  const p = await store.create(name, sample);
   await loadProjects(p.id);
 }
 
@@ -1591,23 +1670,24 @@ async function onMenu(act) {
   const p = P();
   if (act === 'dup-env') { await duplicateForEnvironment(); return; }
   if (act === 'compare') { await openCompare(); return; }
-  if (act === 'duplicate') { await flushSave(); const c = await api('POST', `/api/projects/${p.id}/duplicate`); await loadProjects(c.id); toast('Proyecto duplicado'); }
+  if (act === 'duplicate') { await flushSave(); const c = await store.duplicate(p.id); await loadProjects(c.id); toast('Proyecto duplicado'); }
   else if (act === 'delete') {
     if (!confirm(`¿Eliminar “${p.name}”? Se moverá a data/trash.`)) return;
-    await api('DELETE', `/api/projects/${p.id}`); S.project = null;
-    const rest = await api('GET', '/api/projects');
-    if (!rest.length) await api('POST', '/api/projects', { name: 'Nuevo proyecto' });
+    await store.remove(p.id); S.project = null;
+    const rest = await store.list();
+    if (!rest.length) await store.create('Nuevo proyecto', true);
     await loadProjects();
   } else if (act === 'export-md' || act === 'export-json') {
     await flushSave();
-    const a = document.createElement('a'); a.href = `/api/projects/${p.id}/export.${act === 'export-md' ? 'md' : 'json'}`; a.download = ''; a.click();
+    await store.download(p, act === 'export-md' ? 'md' : 'json');
   } else if (act === 'import') $('#fileImport').click();
   else if (act === 'sample') newProject(true);
   else if (act === 'backups') {
     await flushSave();
-    const list = await api('GET', `/api/projects/${p.id}/backups`);
+    const list = await store.backups(p.id);
     openModal('backups', 'Respaldos automáticos');
     $('#modalBody').innerHTML = `<div class="mcontent"><p class="muted">Se guarda una copia como máximo cada 5 minutos mientras editas (últimas 50).</p>
+      ${S.demo ? '<p><b>En la demo</b> los proyectos viven sólo en este navegador: usa “Exportar JSON” para respaldarlos.</p>' : ''}
       ${list.length ? `<table class="tbl"><tr><th>Fecha</th><th>Tamaño</th><th></th></tr>${list.map((b) => `<tr><td>${esc(b.id.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6'))}</td>
         <td>${Math.round(b.size / 1024)} KB</td><td><button class="btn sm" data-restore="${b.id}">Restaurar</button></td></tr>`).join('')}</table>` : '<p>Aún no hay respaldos.</p>'}</div>`;
   }
@@ -1624,7 +1704,7 @@ async function duplicateForEnvironment() {
     if (v.trim() && old) map[old] = v.trim();
   }
   try {
-    const c = await api('POST', `/api/projects/${P().id}/duplicate`, { environment: env.trim(), account_map: map });
+    const c = await store.duplicate(P().id, { environment: env.trim(), account_map: map });
     await loadProjects(c.id); toast(`Creado ${c.name}: la línea base de las cuentas quedó “Sin confirmar”`, 5000);
   } catch (e) { toast(e.message, 6000); }
 }
@@ -1637,7 +1717,7 @@ async function openCompare() {
   $('#modalBody').innerHTML = `<div class="mcontent"><div class="filters">Comparar <b>${esc(P().name)}</b> con
     <select id="cmpOther" class="btn sm">${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div id="cmpOut"></div></div>`;
   const run = async () => {
-    const d = await api('GET', `/api/compare/${P().id}/${$('#cmpOther').value}`);
+    const d = await store.compare(P().id, $('#cmpOther').value);
     const v = (x) => esc(Array.isArray(x) ? x.join(', ') : (x ?? '—'));
     const list = (arr) => (arr.length ? `<ul>${arr.map((n) => `<li>${esc(n.label)} <span class="muted">(${esc(n.type_name)})</span></li>`).join('')}</ul>` : '<p class="muted">Ninguno.</p>');
     $('#cmpOut').innerHTML = `<p>${d.same} componentes iguales · ${d.changed.length} con diferencias · ${d.only_a.length} sólo en A · ${d.only_b.length} sólo en B</p>
@@ -1660,7 +1740,7 @@ async function openCompare() {
 
 async function restoreBackup(id) {
   if (!confirm('¿Restaurar este respaldo? La versión actual quedará también respaldada.')) return;
-  await api('POST', `/api/projects/${P().id}/backups/${id}/restore`);
+  await store.restore(P().id, id);
   closeModal(); await openProject(P().id); toast('Respaldo restaurado');
 }
 
@@ -1740,7 +1820,7 @@ function bind() {
   $('#btnForce').onclick = () => save(true);
   $('#fileImport').onchange = async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
-    try { const data = JSON.parse(await f.text()); const p = await api('POST', '/api/import', data); await loadProjects(p.id); toast('Proyecto importado'); }
+    try { const data = JSON.parse(await f.text()); const p = await store.importProject(data); await loadProjects(p.id); toast('Proyecto importado'); }
     catch (e) { toast('No se pudo importar: ' + e.message, 5000); }
     ev.target.value = '';
   };
@@ -1764,6 +1844,15 @@ async function init() {
   S.catalog = await api('GET', '/api/catalog');
   S.catalog.components.forEach((c) => { S.comp[c.id] = c; });
   S.catalog.categories.forEach((c) => { S.cats[c.id] = c; });
+  try {
+    const cfg = await api('GET', '/api/config');
+    S.demo = cfg.storage === 'browser';
+  } catch { S.demo = false; }
+  if (S.demo) {
+    store = browserStore;
+    $('#demoBanner').classList.remove('hidden');
+    if (!(await store.list()).length) await store.create(null, true);
+  }
   await loadIcons();
   renderPalette();
   api('GET', '/api/ai/status').then((s) => { S.ai = s; }).catch(() => {});
