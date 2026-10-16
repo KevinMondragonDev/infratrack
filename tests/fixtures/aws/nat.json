@@ -1,0 +1,11 @@
+{
+ "NatGateways": [
+  {
+   "NatGatewayId": "nat-1",
+   "SubnetId": "subnet-pa",
+   "VpcId": "vpc-1",
+   "ConnectivityType": "public",
+   "State": "available"
+  }
+ ]
+}

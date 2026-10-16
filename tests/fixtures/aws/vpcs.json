@@ -1,0 +1,14 @@
+{
+ "Vpcs": [
+  {
+   "VpcId": "vpc-1",
+   "CidrBlock": "10.0.0.0/16",
+   "Tags": [
+    {
+     "Key": "Name",
+     "Value": "cip-dev"
+    }
+   ]
+  }
+ ]
+}

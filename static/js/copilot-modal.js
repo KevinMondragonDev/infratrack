@@ -1,4 +1,5 @@
 /* InfraTrack — copilot-modal */
+import { onAwsChange, onAwsClick } from './aws-import.js';
 import { onTfChange, onTfClick } from './tf-import.js';
 import { filterRules, onRulesChange, onRulesClick, rulesTabHtml } from './rules-tab.js';
 import { api, copy, reportError } from './api.js';
@@ -134,6 +135,8 @@ export function securityHtml(A) {
 }
 
 export function onModalClick(ev) {
+  const aws = ev.target.closest('[data-aws]');
+  if (aws) { onAwsClick(aws); return; }
   const tf = ev.target.closest('[data-tf]');
   if (tf) { onTfClick(tf); return; }
   const r = ev.target.closest('[data-rules]');
@@ -152,7 +155,7 @@ export function onModalClick(ev) {
 }
 export function onModalChange(ev) {
   const t = ev.target;
-  if (onRulesChange(t) || onTfChange(t)) return;
+  if (onRulesChange(t) || onTfChange(t) || onAwsChange(t)) return;
   if (t.id === 'catFilter') { S.catFilter = t.value; renderCopilotTab(); }
   if (t.id === 'showDismissed') { S.showDismissed = t.checked; renderCopilotTab(); }
   if (t.id === 'secShowNa') { S.secShowNa = t.checked; renderCopilotTab(); }

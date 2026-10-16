@@ -1,0 +1,13 @@
+{
+ "InternetGateways": [
+  {
+   "InternetGatewayId": "igw-1",
+   "Attachments": [
+    {
+     "VpcId": "vpc-1",
+     "State": "available"
+    }
+   ]
+  }
+ ]
+}

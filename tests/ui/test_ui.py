@@ -164,6 +164,19 @@ class TerraformUiTest(UiTest):
         self.page.wait_for_function("window.InfraTrack.S.analysis.findings.some(f => f.rule === 'TF-PLAN-DESTROY')")
 
 
+class AwsImportUiTest(UiTest):
+    def test_import_network_into_new_project(self):
+        fix = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures", "aws")
+        files = sorted(os.path.join(fix, f) for f in os.listdir(fix))
+        self.page.locator("#btnMenu").click()
+        self.page.locator("[data-act='aws-import']").click()
+        self.page.locator("#awsFiles").set_input_files(files)
+        self.page.wait_for_selector("[data-aws='new']")
+        self.page.locator("[data-aws='new']").click()
+        self.page.wait_for_function("window.InfraTrack.P().name.startsWith('Importado de AWS')")
+        self.assertGreater(self.node_count(), 15)
+
+
 class RulesUiTest(UiTest):
     def test_disable_rule_from_rules_tab(self):
         self.assertTrue(self.js("window.InfraTrack.S.analysis.findings.some(f => f.rule === 'EMR-ICEBERG')"))

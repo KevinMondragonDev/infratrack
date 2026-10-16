@@ -145,6 +145,19 @@ Security Best Practices (FSBP) y CIS cuando aplica, y sus hallazgos.
   directorio y 2 AZ).
 - El selector de **ambiente** en la barra del lienzo resalta sólo las cuentas de ese ambiente.
 
+### Importar la red existente desde AWS
+
+*Proyecto → Importar la red existente desde AWS*: corre comandos de **sólo lectura** con tu perfil (o
+`./scripts/export-aws-network.sh us-east-1`) y sube los JSON. InfraTrack nunca recibe tus credenciales.
+
+```bash
+AWS_PROFILE=mi-perfil ./scripts/export-aws-network.sh us-east-1 ./aws-export
+```
+
+Se arman las VPCs con sus subnets (columnas por AZ y filas por tipo: pública, privada o aislada según sus rutas),
+IGW, NAT, VPC endpoints (los de interfaz quedan "desplegados en" todas sus subnets), tablas de rutas, NACL y Security
+Groups con sus reglas reales, listos para que el Copilot los revise.
+
 ### Estado y plan de Terraform
 
 *Proyecto → Importar estado o plan de Terraform*:
