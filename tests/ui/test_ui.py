@@ -136,6 +136,18 @@ class AppUiTest(UiTest):
         self.assertEqual(self.node_count(), before)
 
 
+class RulesUiTest(UiTest):
+    def test_disable_rule_from_rules_tab(self):
+        self.assertTrue(self.js("window.InfraTrack.S.analysis.findings.some(f => f.rule === 'EMR-ICEBERG')"))
+        self.page.locator("#btnCopilot").click()
+        self.page.locator(".mtabs .tab", has_text="Reglas").click()
+        self.page.locator("#rulesSearch").fill("EMR-ICEBERG")
+        self.page.locator("input[data-ren='EMR-ICEBERG']").uncheck()
+        self.page.wait_for_function("!window.InfraTrack.S.analysis.findings.some(f => f.rule === 'EMR-ICEBERG')")
+        self.assertEqual(self.js("window.InfraTrack.P().settings.rules['EMR-ICEBERG'].enabled"), False)
+        self.assertTrue(self.page.locator("tr:not(.hidden) input[data-ren='EMR-ICEBERG']").is_visible())
+
+
 class DemoUiTest(UiTest):
     demo = True
 

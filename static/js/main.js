@@ -1,7 +1,7 @@
 /* InfraTrack — main */
 import { api, reportError, toast } from './api.js';
 import { renderCanvas } from './canvas.js';
-import { closeModal, onModalChange, onModalClick, openCopilot } from './copilot-modal.js';
+import { closeModal, onModalChange, onModalClick, onModalInput, openCopilot } from './copilot-modal.js';
 import { $, S, SEVS } from './core.js';
 import { catOf, catTableBody } from './glue-catalog.js';
 import { installIcons, loadIcons } from './icons.js';
@@ -87,6 +87,7 @@ export function bind() {
   $('#modal').addEventListener('click', (ev) => { if (ev.target.id === 'modal') closeModal(); });
   $('#modalBody').addEventListener('click', onModalClick);
   $('#modalBody').addEventListener('change', onModalChange);
+  $('#modalBody').addEventListener('input', onModalInput);
   $('#btnReload').onclick = () => { $('#conflict').classList.add('hidden'); openProject(P().id).catch(reportError); };
   $('#btnForce').onclick = () => { save(true).catch(reportError); };
   $('#fileImport').onchange = async (ev) => {

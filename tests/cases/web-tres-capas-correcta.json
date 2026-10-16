@@ -1,0 +1,235 @@
+{
+ "description": "ALB público con WAF → ECS en subnets privadas → RDS Multi-AZ; NAT en subnet pública. No debe marcar problemas de red.",
+ "project": {
+  "settings": {
+   "environment": "prod"
+  },
+  "nodes": [
+   {
+    "id": "vpc",
+    "type": "vpc",
+    "label": "vpc",
+    "x": 0,
+    "y": 0,
+    "w": 1200,
+    "h": 700,
+    "config": {
+     "cidr": "10.0.0.0/16",
+     "flow_logs": true
+    }
+   },
+   {
+    "id": "pa",
+    "type": "subnet",
+    "label": "pa",
+    "x": 20,
+    "y": 50,
+    "w": 350,
+    "h": 250,
+    "config": {
+     "tier": "public",
+     "cidr": "10.0.0.0/24",
+     "az": "a"
+    }
+   },
+   {
+    "id": "pb",
+    "type": "subnet",
+    "label": "pb",
+    "x": 400,
+    "y": 50,
+    "w": 350,
+    "h": 250,
+    "config": {
+     "tier": "public",
+     "cidr": "10.0.1.0/24",
+     "az": "b"
+    }
+   },
+   {
+    "id": "aa",
+    "type": "subnet",
+    "label": "aa",
+    "x": 20,
+    "y": 350,
+    "w": 350,
+    "h": 300,
+    "config": {
+     "tier": "private",
+     "cidr": "10.0.10.0/24",
+     "az": "a"
+    }
+   },
+   {
+    "id": "ab",
+    "type": "subnet",
+    "label": "ab",
+    "x": 400,
+    "y": 350,
+    "w": 350,
+    "h": 300,
+    "config": {
+     "tier": "private",
+     "cidr": "10.0.11.0/24",
+     "az": "b"
+    }
+   },
+   {
+    "id": "igw",
+    "type": "igw",
+    "label": "igw",
+    "x": 780,
+    "y": 10,
+    "w": 110,
+    "h": 40,
+    "config": {}
+   },
+   {
+    "id": "nat",
+    "type": "nat",
+    "label": "nat",
+    "x": 200,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "connectivity": "public",
+     "ha": "Uno por AZ (recomendado prod)"
+    }
+   },
+   {
+    "id": "nat2",
+    "type": "nat",
+    "label": "nat2",
+    "x": 420,
+    "y": 200,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "connectivity": "public",
+     "ha": "Uno por AZ (recomendado prod)"
+    }
+   },
+   {
+    "id": "alb",
+    "type": "alb",
+    "label": "alb",
+    "x": 40,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "scheme": "internet-facing",
+     "listeners": [
+      "HTTPS:443"
+     ],
+     "target_type": "ip",
+     "waf": true
+    }
+   },
+   {
+    "id": "ecs",
+    "type": "ecs",
+    "label": "ecs",
+    "x": 40,
+    "y": 400,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "launch_type": "Fargate",
+     "desired": 2,
+     "port": 8080,
+     "image_source": "ECR"
+    }
+   },
+   {
+    "id": "db",
+    "type": "rds",
+    "label": "db",
+    "x": 220,
+    "y": 500,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "engine": "PostgreSQL",
+     "multi_az": true
+    }
+   },
+   {
+    "id": "u",
+    "type": "users",
+    "label": "u",
+    "x": -300,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {}
+   },
+   {
+    "id": "ep",
+    "type": "vpce",
+    "label": "ep",
+    "x": 420,
+    "y": 400,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "endpoint_type": "Interface",
+     "services": [
+      "ecr.api",
+      "ecr.dkr",
+      "logs"
+     ]
+    }
+   },
+   {
+    "id": "s3ep",
+    "type": "vpce",
+    "label": "s3ep",
+    "x": 420,
+    "y": 500,
+    "w": 150,
+    "h": 56,
+    "config": {
+     "endpoint_type": "Gateway",
+     "services": [
+      "s3"
+     ]
+    }
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "source": "u",
+    "target": "alb",
+    "access": "network",
+    "port": 443
+   },
+   {
+    "id": "e2",
+    "source": "alb",
+    "target": "ecs",
+    "access": "invoke",
+    "port": 8080
+   },
+   {
+    "id": "e3",
+    "source": "ecs",
+    "target": "db",
+    "access": "network"
+   }
+  ]
+ },
+ "expect": [],
+ "not_expect": [
+  "NET-UNREACHABLE",
+  "NET-NEEDS-NAT",
+  "NET-NEEDS-ENDPOINT",
+  "LB-NEEDED",
+  "SEC-WAF",
+  "HA-MULTI-AZ-REQ",
+  "NET-LB-SCHEME",
+  "SEC-DATA-PUBLIC-SUBNET"
+ ]
+}

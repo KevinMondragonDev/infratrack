@@ -1,0 +1,69 @@
+{
+ "description": "Una Lambda en DEV escribe en un bucket de PROD: debe marcar mezcla de ambientes y generar política cross-account.",
+ "project": {
+  "nodes": [
+   {
+    "id": "ap",
+    "type": "account",
+    "label": "ap",
+    "x": 0,
+    "y": 0,
+    "w": 800,
+    "h": 600,
+    "config": {
+     "account_id": "111111111111",
+     "environment": "prod"
+    }
+   },
+   {
+    "id": "ad",
+    "type": "account",
+    "label": "ad",
+    "x": 900,
+    "y": 0,
+    "w": 800,
+    "h": 600,
+    "config": {
+     "account_id": "222222222222",
+     "environment": "dev"
+    }
+   },
+   {
+    "id": "b",
+    "type": "s3",
+    "label": "b",
+    "x": 100,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {}
+   },
+   {
+    "id": "fn",
+    "type": "lambda",
+    "label": "fn",
+    "x": 1000,
+    "y": 100,
+    "w": 150,
+    "h": 56,
+    "config": {}
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "source": "fn",
+    "target": "b",
+    "access": "write"
+   }
+  ]
+ },
+ "expect": [
+  "XACCT-ENV-MIX",
+  "ORG-MISSING",
+  "ACC-UNCONFIRMED"
+ ],
+ "not_expect": [
+  "ACC-ROOT-MFA"
+ ]
+}

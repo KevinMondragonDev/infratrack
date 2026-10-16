@@ -60,6 +60,17 @@ def build_markdown(project):
             L.append(f"| {_fmt(f['title'])} | {_fmt(d.get('reason'))} | {_fmt(d.get('by'))} {d.get('at', '')} |")
         L.append("")
 
+    # Reglas ajustadas para este proyecto
+    from rules import clean_overrides, registry
+    overrides = clean_overrides((project.get("settings") or {}).get("rules"))
+    if overrides:
+        names = {r["id"]: r for r in registry()}
+        L += ["## Reglas del Copilot ajustadas", "", "| Regla | Descripción | Ajuste | Comentario |", "|---|---|---|---|"]
+        for rid, ov in sorted(overrides.items()):
+            change = "Desactivada" if ov.get("enabled") is False else f"Severidad {names[rid]['severity']} → {ov.get('severity')}"
+            L.append(f"| {rid} | {_fmt(names[rid]['title'])} | {change} | {_fmt(ov.get('comment'))} |")
+        L.append("")
+
     # Componentes
     L += ["## Componentes", ""]
     for cat in CATEGORIES:
