@@ -34,13 +34,28 @@ jobs:
         run: python -m compileall -q .
       - name: Pruebas
         run: python -m unittest discover -s tests -v
-      - name: Sintaxis del frontend
+      - name: Módulos del frontend enlazan
         if: matrix.os == 'ubuntu-latest'
-        run: node --check static/app.js
+        run: node scripts/check-modules.mjs
+
+  ui:
+    name: Pruebas de interfaz (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Instalar Playwright y Chromium
+        run: |
+          python -m pip install --only-binary :all: --no-deps --require-hashes -r requirements-ui.txt
+          python -m playwright install --with-deps chromium
+      - name: Pruebas de interfaz
+        run: python -m unittest tests.ui.test_ui -v
 
   nightly:
     name: Publicar nightly
-    needs: test
+    needs: [test, ui]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:

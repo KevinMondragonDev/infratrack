@@ -38,6 +38,12 @@ from storage import Conflict, Store  # noqa: E402
 STATIC = os.path.join(BASE, "static")
 MAX_BODY = 20 * 1024 * 1024
 STORE = None
+
+
+class Server(ThreadingHTTPServer):
+    """Servidor con cola de conexiones amplia: la interfaz pide ~100 archivos (módulos e iconos) al cargar."""
+    request_queue_size = 128
+    daemon_threads = True
 # Demo pública (p. ej. Vercel): sin almacenamiento en servidor; los proyectos viven en el navegador.
 DEMO = os.environ.get("INFRATRACK_DEMO") == "1"
 
@@ -330,7 +336,7 @@ def main():
     STORE = Store(args.data)
     if not DEMO and not STORE.list():
         STORE.create(None, sample_project())
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv = Server((args.host, args.port), Handler)
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}"
     print(f"InfraTrack en {url}  (datos: {STORE.root})  Ctrl+C para salir")
     if args.host not in ("127.0.0.1", "localhost"):
