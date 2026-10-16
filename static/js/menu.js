@@ -1,4 +1,5 @@
 /* InfraTrack — menu */
+import { runExport } from './export.js';
 import { openAwsImport } from './aws-import.js';
 import { openTfImport } from './tf-import.js';
 import { toast } from './api.js';
@@ -16,6 +17,7 @@ export async function onMenu(act) {
   const p = P();
   if (act === 'dup-env') { await duplicateForEnvironment(); return; }
   if (act === 'compare') { await openCompare(); return; }
+  if (['export-png', 'export-svg', 'export-drawio'].includes(act)) { await runExport(act.slice(7)); return; }
   if (act === 'tf-import') { openTfImport(); return; }
   if (act === 'aws-import') { openAwsImport(); return; }
   if (act === 'duplicate') { await flushSave(); const c = await store.duplicate(p.id); await loadProjects(c.id); toast('Proyecto duplicado'); }
