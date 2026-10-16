@@ -1,4 +1,5 @@
 """Prueba de humo del servidor HTTP y del almacenamiento JSON."""
+import base64
 import json
 import os
 import sys
@@ -130,7 +131,7 @@ class DemoModeTest(unittest.TestCase):
         _, a = self.call("POST", "/api/analyze", sample)
         self.assertIn("posture", a)
         _, md = self.call("POST", "/api/export-md", sample)
-        self.assertIn("# ", md["markdown"])
+        self.assertIn("# Ejemplo", base64.b64decode(md["markdown_b64"]).decode("utf-8"))
         _, pre = self.call("POST", "/api/duplicate-env", {"project": sample, "environment": "pre"})
         self.assertEqual(pre["settings"]["environment"], "pre")
         _, d = self.call("POST", "/api/compare-projects", {"a": sample, "b": pre})

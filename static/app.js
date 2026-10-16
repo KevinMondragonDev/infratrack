@@ -160,7 +160,8 @@ const browserStore = {
   async download(p, kind) {
     if (kind === 'json') { download(`${fileSafe(p.name)}.infratrack.json`, JSON.stringify(p, null, 2), 'application/json'); return; }
     const r = await api('POST', '/api/export-md', p);
-    download(`${fileSafe(p.name)}.md`, r.markdown, 'text/markdown');
+    const md = new TextDecoder().decode(Uint8Array.from(atob(r.markdown_b64), (ch) => ch.charCodeAt(0)));
+    download(`${fileSafe(p.name)}.md`, md, 'text/markdown');
   },
 };
 let store = serverStore;

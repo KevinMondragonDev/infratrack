@@ -10,6 +10,7 @@ Uso:
 Sólo usa la librería estándar de Python (3.9+). La IA es opcional (pip install anthropic).
 """
 import argparse
+import base64
 import json
 import mimetypes
 import os
@@ -250,8 +251,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(sample_project())
 
     def api_export_md_post(self):
-        # Responde JSON (no texto reflejado): el navegador arma la descarga.
-        self.send_json({"markdown": build_markdown(self.body())})
+        # El reporte viaja en base64 (la respuesta no contiene marcado reflejado); el navegador arma la descarga.
+        md = build_markdown(self.body()).encode("utf-8")
+        self.send_json({"markdown_b64": base64.b64encode(md).decode("ascii")})
 
     def api_compare_projects(self):
         b = self.body()
