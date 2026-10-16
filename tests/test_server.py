@@ -130,7 +130,7 @@ class DemoModeTest(unittest.TestCase):
         _, a = self.call("POST", "/api/analyze", sample)
         self.assertIn("posture", a)
         _, md = self.call("POST", "/api/export-md", sample)
-        self.assertIn("# ", md)
+        self.assertIn("# ", md["markdown"])
         _, pre = self.call("POST", "/api/duplicate-env", {"project": sample, "environment": "pre"})
         self.assertEqual(pre["settings"]["environment"], "pre")
         _, d = self.call("POST", "/api/compare-projects", {"a": sample, "b": pre})

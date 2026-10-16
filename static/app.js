@@ -89,16 +89,32 @@ const serverStore = {
   compare: (a, b) => api('GET', `/api/compare/${a}/${b}`),
   backups: (id) => api('GET', `/api/projects/${id}/backups`),
   restore: (id, bid) => api('POST', `/api/projects/${id}/backups/${bid}/restore`),
-  download(p, kind) {
+  async download(p, kind) {
     const a = document.createElement('a'); a.href = `/api/projects/${p.id}/export.${kind}`; a.download = ''; a.click();
   },
 };
 
 const LS_PROJECTS = 'it.projects.v1';
+/* Normaliza un proyecto antes de guardarlo en el navegador: sólo los campos y tipos esperados. */
+const asText = (v, max = 20000) => (typeof v === 'string' ? v.slice(0, max) : '');
+const asList = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && !Array.isArray(x)) : []);
+const asObj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+function cleanProject(p) {
+  const src = asObj(p);
+  const id = /^[\w-]{1,64}$/.test(src.id) ? src.id : uid('p');
+  return {
+    id, name: asText(src.name, 200) || 'Proyecto', description: asText(src.description),
+    created: asText(src.created, 40), updated: asText(src.updated, 40), rev: Number.isFinite(src.rev) ? src.rev : 0,
+    settings: asObj(src.settings), dismissed: asObj(src.dismissed),
+    nodes: asList(src.nodes).filter((n) => typeof n.id === 'string' && typeof n.type === 'string'),
+    edges: asList(src.edges).filter((e) => typeof e.id === 'string' && typeof e.source === 'string' && typeof e.target === 'string'),
+  };
+}
 const browserStore = {
   _all() { return lsGet(LS_PROJECTS, {}) || {}; },
   _put(all) {
-    try { localStorage.setItem(LS_PROJECTS, JSON.stringify(all)); }
+    const clean = Object.fromEntries(Object.values(all).map(cleanProject).map((p) => [p.id, p]));
+    try { localStorage.setItem(LS_PROJECTS, JSON.stringify(clean)); }
     catch { throw new Error('El navegador no tiene espacio para guardar: exporta el proyecto a JSON.'); }
   },
   async list() {
@@ -111,7 +127,9 @@ const browserStore = {
     return structuredClone(p);
   },
   async create(name, sample, template) {
-    const base = template ? structuredClone(template) : sample ? await api('GET', '/api/sample') : {};
+    let base = {};
+    if (template) base = structuredClone(template);
+    else if (sample) base = await api('GET', '/api/sample');
     const now = new Date().toISOString();
     const p = { description: '', settings: { region: 'us-east-1', account_id: '', environment: 'dev', prefix: '' }, nodes: [], edges: [],
       dismissed: {}, ...base, id: uid('p'), name: name || base.name || 'Nuevo proyecto', created: now, updated: now, rev: 1 };
@@ -141,9 +159,8 @@ const browserStore = {
   async restore() { throw new Error('No disponible en la demo'); },
   async download(p, kind) {
     if (kind === 'json') { download(`${fileSafe(p.name)}.infratrack.json`, JSON.stringify(p, null, 2), 'application/json'); return; }
-    const r = await fetch('/api/export-md', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
-    if (!r.ok) throw new Error('No se pudo generar el reporte');
-    download(`${fileSafe(p.name)}.md`, await r.text(), 'text/markdown');
+    const r = await api('POST', '/api/export-md', p);
+    download(`${fileSafe(p.name)}.md`, r.markdown, 'text/markdown');
   },
 };
 let store = serverStore;

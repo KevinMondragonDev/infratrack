@@ -97,22 +97,29 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    @staticmethod
+    def find_route(method, path):
+        for m, pattern, fn in ROUTES:
+            match = re.fullmatch(pattern, path) if m == method else None
+            if match:
+                return fn, match.groups()
+        return None, ()
+
+    def dispatch(self, method, path):
+        if method != "GET" and not self._same_origin():
+            return self.error(403, "Origen no permitido")
+        if not path.startswith("/api/"):
+            return self.static(path) if method == "GET" else self.error(405, "Método no permitido")
+        fn, args = self.find_route(method, path)
+        if fn is None:
+            return self.error(404, "No encontrado")
+        if DEMO and fn not in DEMO_ROUTES:
+            return self.error(404, "No disponible en la demo")
+        return fn(self, *args)
+
     def route(self, method):
-        path = urlparse(self.path).path
         try:
-            if method != "GET" and not self._same_origin():
-                return self.error(403, "Origen no permitido")
-            if not path.startswith("/api/"):
-                return self.static(path) if method == "GET" else self.error(405, "Método no permitido")
-            for m, pattern, fn in ROUTES:
-                if m != method:
-                    continue
-                match = re.fullmatch(pattern, path)
-                if match:
-                    if DEMO and fn not in DEMO_ROUTES:
-                        return self.error(404, "No disponible en la demo")
-                    return fn(self, *match.groups())
-            self.error(404, "No encontrado")
+            self.dispatch(method, urlparse(self.path).path)
         except KeyError:
             self.error(404, "Proyecto no encontrado")
         except Conflict as c:
@@ -243,8 +250,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(sample_project())
 
     def api_export_md_post(self):
-        p = self.body()
-        self.send_text(build_markdown(p), "text/markdown; charset=utf-8", f"{p.get('name') or 'proyecto'}.md")
+        # Responde JSON (no texto reflejado): el navegador arma la descarga.
+        self.send_json({"markdown": build_markdown(self.body())})
 
     def api_compare_projects(self):
         b = self.body()
